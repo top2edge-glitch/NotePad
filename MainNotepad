@@ -134,6 +134,11 @@ class DailyNotesApp:
         self.images = []
         self.image_references = {}
         self.table_references = {} # NEW: To hold references to embedded TableFrame objects
+        self.save_job = None
+        self.last_saved_at = None
+        self.header_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Ready")
+        self.stats_var = tk.StringVar(value="Words: 0 | Chars: 0 | Ln 1, Col 0")
 
         # --- UI SETUP ---
         # Left frame: Calendar + Page Selector
@@ -169,6 +174,12 @@ class DailyNotesApp:
         right_frame = tk.Frame(self.root, padx=10, pady=10)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
+        # Header
+        header_frame = tk.Frame(right_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        header_label = tk.Label(header_frame, textvariable=self.header_var, anchor="w", font=("Arial", 11, "bold"))
+        header_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Toolbar
         toolbar = tk.Frame(right_frame)
         toolbar.pack(fill=tk.X, pady=(0, 5))
@@ -203,6 +214,16 @@ class DailyNotesApp:
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.text.bind("<KeyRelease>", self.auto_save)
+        self.text.bind("<KeyRelease>", self.update_status_metrics, add="+")
+        self.text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
+
+        # Status bar
+        status_frame = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor="w")
+        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=2)
+        stats_label = tk.Label(status_frame, textvariable=self.stats_var, anchor="e")
+        stats_label.pack(side=tk.RIGHT, padx=6, pady=2)
         
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
@@ -225,6 +246,7 @@ class DailyNotesApp:
         self.text.tag_configure("align_right", justify=tk.RIGHT)
 
         self.load_date_and_pages(self.current_date)
+        self.update_status_metrics()
     # [ID: INIT_END_002]
 
     # [ID: FILE_MANAGEMENT_START_003]
@@ -408,6 +430,7 @@ class DailyNotesApp:
     # [ID: CORE_SAVE_START_006]
     def save_notes(self, event):
         """Saves the current page's content using the text.dump() method."""
+        self.save_job = None
         date = self.current_date
         notes_file = self.get_page_content_file(date, self.current_page_title)
 
@@ -483,14 +506,20 @@ class DailyNotesApp:
         try:
             with open(notes_file, 'w') as f:
                 json.dump(data, f, indent=4)
+            self.last_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved at {self.last_saved_at.strftime('%H:%M:%S')}")
+            self.update_status_metrics()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save notes: {e}")
     # [ID: CORE_SAVE_END_006]
 
     # [ID: CORE_LOAD_START_007]
     def auto_save(self, event):
-        """Triggers save on key release."""
-        self.save_notes(event)
+        """Schedules a save after a short debounce window."""
+        if self.save_job is not None:
+            self.root.after_cancel(self.save_job)
+        self.status_var.set("Saving...")
+        self.save_job = self.root.after(500, lambda: self.save_notes(event))
 
     def load_notes_for_page(self):
         """Clears current text and loads the saved notes for the current page."""
@@ -549,6 +578,8 @@ class DailyNotesApp:
             self.text.insert(tk.END, f"Start writing for '{self.current_page_title}' here...")
         
         self.text.config(font=self.default_font)
+        self.update_header()
+        self.update_status_metrics()
 
     def load_date_and_pages(self, date):
         """Loads pages for a date, then loads the content for the first page."""
@@ -565,6 +596,17 @@ class DailyNotesApp:
         
         self.load_date_and_pages(selected_date)
     # [ID: CORE_LOAD_END_007]
+
+    def update_header(self):
+        date_str = self.current_date.strftime("%B %d, %Y")
+        self.header_var.set(f"{date_str} • {self.current_page_title}")
+
+    def update_status_metrics(self, event=None):
+        content = self.text.get("1.0", "end-1c")
+        words = len([word for word in content.split() if word.strip()])
+        chars = len(content)
+        line, col = self.text.index(tk.INSERT).split(".")
+        self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
 
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
