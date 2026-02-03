@@ -134,6 +134,8 @@ class DailyNotesApp:
         self.images = []
         self.image_references = {}
         self.table_references = {} # NEW: To hold references to embedded TableFrame objects
+        self.save_job = None
+        self.last_saved_at = None
 
         # --- UI SETUP ---
         # Left frame: Calendar + Page Selector
@@ -203,6 +205,11 @@ class DailyNotesApp:
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.text.bind("<KeyRelease>", self.auto_save)
+
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready")
+        status_bar = tk.Label(self.root, textvariable=self.status_var, anchor="w", relief=tk.SUNKEN)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
@@ -408,6 +415,7 @@ class DailyNotesApp:
     # [ID: CORE_SAVE_START_006]
     def save_notes(self, event):
         """Saves the current page's content using the text.dump() method."""
+        self.save_job = None
         date = self.current_date
         notes_file = self.get_page_content_file(date, self.current_page_title)
 
@@ -483,14 +491,19 @@ class DailyNotesApp:
         try:
             with open(notes_file, 'w') as f:
                 json.dump(data, f, indent=4)
+            self.last_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved at {self.last_saved_at.strftime('%H:%M:%S')}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save notes: {e}")
     # [ID: CORE_SAVE_END_006]
 
     # [ID: CORE_LOAD_START_007]
     def auto_save(self, event):
-        """Triggers save on key release."""
-        self.save_notes(event)
+        """Schedules a save after a short debounce window."""
+        if self.save_job is not None:
+            self.root.after_cancel(self.save_job)
+        self.status_var.set("Saving...")
+        self.save_job = self.root.after(500, lambda: self.save_notes(event))
 
     def load_notes_for_page(self):
         """Clears current text and loads the saved notes for the current page."""
