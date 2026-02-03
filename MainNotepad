@@ -1,0 +1,840 @@
+import os
+import datetime
+import json
+import shutil
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog, colorchooser
+from tkcalendar import Calendar
+from PIL import Image, ImageTk, ImageGrab
+from io import BytesIO
+import base64
+
+# [ID: CONFIG_START_001]
+NOTES_BASE_DIR = "notes"
+PAGES_LIST_FILE = "pages_list.json"
+ATTACHMENTS_DIR_NAME = "attachments"
+
+# Ensure main notes directory exists
+if not os.path.exists(NOTES_BASE_DIR):
+    os.makedirs(NOTES_BASE_DIR)
+# [ID: CONFIG_END_001]
+
+
+# [ID: TABLE_FRAME_CLASS_NEW]
+class TableFrame(tk.Frame):
+    """A custom frame containing Entry widgets to represent a simple table."""
+    def __init__(self, master, app_reference, initial_data=None, rows=3, cols=3):
+        super().__init__(master, bd=1, relief=tk.SUNKEN)
+        self.app = app_reference
+        self.entry_widgets = []
+        self.max_rows = rows
+        self.max_cols = cols
+
+        if initial_data:
+            self.max_rows = initial_data.get('rows', rows)
+            self.max_cols = initial_data.get('cols', cols)
+            self.data = initial_data.get('cell_data', {})
+        else:
+            self.data = {}
+
+        self.draw_table()
+
+    def draw_table(self):
+        """Redraws the table UI based on current row/col count and data."""
+        # Clear existing widgets
+        for widget in self.winfo_children():
+            widget.destroy()
+        self.entry_widgets = []
+
+        # --- Draw Controls (Row/Col Buttons) ---
+        control_frame = tk.Frame(self)
+        control_frame.grid(row=0, column=0, columnspan=self.max_cols + 2, sticky='w')
+        
+        tk.Button(control_frame, text="+ Row", command=self.add_row, font=("Arial", 8)).pack(side=tk.LEFT)
+        tk.Button(control_frame, text="+ Col", command=self.add_col, font=("Arial", 8)).pack(side=tk.LEFT)
+        tk.Button(control_frame, text="Delete Table", command=self.delete_self, font=("Arial", 8), fg='red').pack(side=tk.LEFT, padx=(10, 0))
+        
+        # --- Draw Table Grid ---
+        for r in range(self.max_rows):
+            row_widgets = []
+            for c in range(self.max_cols):
+                # Unique key for data storage
+                key = f"{r},{c}"
+                initial_text = self.data.get(key, "")
+
+                entry = tk.Entry(self, width=15, bd=1, relief=tk.RIDGE)
+                entry.insert(0, initial_text)
+                
+                # Bind key releases to save data immediately
+                entry.bind("<KeyRelease>", lambda e, r=r, c=c, entry=entry: self.update_data(r, c, entry.get()))
+
+                # Use grid layout for the table itself, starting after the control row (row 1)
+                entry.grid(row=r + 1, column=c, padx=1, pady=1, sticky='nsew')
+                row_widgets.append(entry)
+            self.entry_widgets.append(row_widgets)
+            
+        # Ensure the grid columns/rows expand if the frame is resized
+        for c in range(self.max_cols):
+            self.grid_columnconfigure(c, weight=1)
+        for r in range(self.max_rows):
+             self.grid_rowconfigure(r + 1, weight=1)
+
+    def update_data(self, row, col, text):
+        """Updates internal data and triggers a main app save."""
+        key = f"{row},{col}"
+        self.data[key] = text
+        self.app.auto_save(None)
+
+    def add_row(self):
+        self.max_rows += 1
+        self.draw_table()
+        self.app.auto_save(None)
+
+    def add_col(self):
+        self.max_cols += 1
+        self.draw_table()
+        self.app.auto_save(None)
+
+    def delete_self(self):
+        """Removes the embedded table window from the main Text widget."""
+        if messagebox.askyesno("Delete Table", "Are you sure you want to delete this table?"):
+            # Deleting the widget will clear the text.dump() reference next time we save.
+            self.destroy()
+            self.app.auto_save(None)
+
+    def serialize(self):
+        """Returns the table data in a JSON-safe dictionary format."""
+        # Ensure all entries are saved one last time before serialization
+        for r in range(self.max_rows):
+            for c in range(self.max_cols):
+                key = f"{r},{c}"
+                # Safely access widget using grid coordinates
+                entry = self.entry_widgets[r][c] 
+                self.data[key] = entry.get()
+                
+        return {
+            "rows": self.max_rows,
+            "cols": self.max_cols,
+            "cell_data": self.data
+        }
+# [ID: TABLE_FRAME_CLASS_END]
+
+
+class DailyNotesApp:
+    # [ID: INIT_START_002]
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Daily Notes - Multi-Page Improved")
+        self.root.geometry("1100x650") 
+
+        self.current_date = datetime.date.today()
+        self.current_page_title = "Page 1" 
+        self.page_titles = {} 
+
+        self.images = []
+        self.image_references = {}
+        self.table_references = {} # NEW: To hold references to embedded TableFrame objects
+
+        # --- UI SETUP ---
+        # Left frame: Calendar + Page Selector
+        left_frame = tk.Frame(self.root, padx=10, pady=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y)
+
+        # 1. Calendar
+        self.calendar = Calendar(left_frame, selectmode='day', date_pattern='yyyy-mm-dd')
+        self.calendar.pack(pady=10)
+        self.calendar.bind("<<CalendarSelected>>", self.load_selected_date)
+
+        tk.Label(left_frame, text="Pages:").pack(pady=(10, 0))
+
+        # 2. Page Selector Listbox
+        page_frame = tk.Frame(left_frame)
+        page_frame.pack(fill=tk.Y, expand=False, pady=5)
+        
+        self.page_listbox = tk.Listbox(page_frame, height=10, width=25)
+        self.page_listbox.pack(side=tk.LEFT, fill=tk.Y)
+        self.page_listbox.bind("<<ListboxSelect>>", self.switch_page)
+
+        page_scrollbar = tk.Scrollbar(page_frame, command=self.page_listbox.yview)
+        page_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.page_listbox.config(yscrollcommand=page_scrollbar.set)
+
+        # 3. Page Management Buttons
+        page_btn_frame = tk.Frame(left_frame)
+        page_btn_frame.pack(fill=tk.X, pady=5)
+        tk.Button(page_btn_frame, text="Add Page", command=self.add_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(page_btn_frame, text="Del Page", command=self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Right frame: Notes area
+        right_frame = tk.Frame(self.root, padx=10, pady=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Toolbar
+        toolbar = tk.Frame(right_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 5))
+
+        # Formatting Buttons
+        tk.Button(toolbar, text="Bold", command=self.toggle_bold).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Italic", command=self.toggle_italic).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Underline", command=self.toggle_underline).pack(side=tk.LEFT, padx=2) 
+        tk.Button(toolbar, text="Color", command=self.change_color).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Size +", command=lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Size -", command=lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
+        
+        # Alignment Buttons
+        tk.Button(toolbar, text="Left", command=lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
+        tk.Button(toolbar, text="Center", command=lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Right", command=lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
+
+        # NEW Table/Image Buttons
+        tk.Button(toolbar, text="Add Table", command=self.add_table_attachment).pack(side=tk.LEFT, padx=(10, 2))
+        tk.Button(toolbar, text="Add Image", command=self.add_image_attachment).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar, text="Save Now", command=lambda: self.save_notes(None)).pack(side=tk.LEFT, padx=(10, 2))
+        tk.Button(toolbar, text="Clear Attachments", command=self.clear_all_attachments).pack(side=tk.LEFT, padx=2)
+
+
+        # Text Area with Scrollbar
+        text_frame = tk.Frame(right_frame)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        self.text = tk.Text(text_frame, wrap=tk.WORD, font=("Arial", 12), undo=True)
+        scrollbar = tk.Scrollbar(text_frame, command=self.text.yview)
+        self.text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.text.bind("<KeyRelease>", self.auto_save)
+        
+        # --- KEYBOARD SHORTCUTS ---
+        self.text.bind("<Control-z>", self.perform_undo)
+        self.text.bind("<Control-y>", self.perform_redo)
+        self.text.bind("<Control-b>", self.toggle_bold)  
+        self.text.bind("<Control-i>", self.toggle_italic)
+        self.text.bind("<Control-u>", self.toggle_underline)
+        self.text.bind("<Control-c>", self.perform_copy)
+        self.text.bind("<Control-x>", self.perform_cut)
+        self.text.bind("<Control-v>", self.paste_from_clipboard)
+
+        # --- FONT & TAG CONFIGURATION ---
+        self.default_font = ("Arial", 12)
+        self.text.tag_configure("bold", font=(self.default_font[0], self.default_font[1], "bold"))
+        self.text.tag_configure("italic", font=(self.default_font[0], self.default_font[1], "italic"))
+        self.text.tag_configure("underline", font=(self.default_font[0], self.default_font[1], "underline"))
+        
+        self.text.tag_configure("align_left", justify=tk.LEFT)
+        self.text.tag_configure("align_center", justify=tk.CENTER)
+        self.text.tag_configure("align_right", justify=tk.RIGHT)
+
+        self.load_date_and_pages(self.current_date)
+    # [ID: INIT_END_002]
+
+    # [ID: FILE_MANAGEMENT_START_003]
+    # --- FILE & FOLDER MANAGEMENT ---
+    def get_date_folder(self, date):
+        folder = os.path.join(NOTES_BASE_DIR, date.strftime("%Y-%m-%d"))
+        os.makedirs(folder, exist_ok=True)
+        return folder
+
+    def get_page_content_file(self, date, page_title):
+        # Normalize title for filename: replace spaces/special chars with underscores
+        filename = page_title.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        return os.path.join(self.get_date_folder(date), f"{filename}.json")
+
+    def get_pages_list_file(self, date):
+        return os.path.join(self.get_date_folder(date), PAGES_LIST_FILE)
+
+    def get_attachments_folder(self, date):
+        folder = os.path.join(self.get_date_folder(date), ATTACHMENTS_DIR_NAME)
+        os.makedirs(folder, exist_ok=True)
+        return folder
+    # [ID: FILE_MANAGEMENT_END_003]
+
+    # [ID: PAGE_MANAGEMENT_START_004]
+    # --- PAGE MANAGEMENT ---
+    def save_pages_list(self, date):
+        """Saves the list of page titles for the current date."""
+        pages_file = self.get_pages_list_file(date)
+        try:
+            with open(pages_file, 'w') as f:
+                json.dump(self.page_titles[date.isoformat()], f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save pages list: {e}")
+
+    def load_pages_list(self, date):
+        """Loads page titles for a given date and updates the Listbox."""
+        date_str = date.isoformat()
+        pages_file = self.get_pages_list_file(date)
+        self.page_titles[date_str] = []
+
+        if os.path.exists(pages_file):
+            try:
+                with open(pages_file, 'r') as f:
+                    self.page_titles[date_str] = json.load(f)
+            except Exception:
+                # Corrupted file, initialize with default
+                self.page_titles[date_str] = ["Page 1"]
+        
+        if not self.page_titles[date_str]:
+            self.page_titles[date_str] = ["Page 1"]
+            self.save_pages_list(date)
+
+        # Update Listbox
+        self.page_listbox.delete(0, tk.END)
+        for title in self.page_titles[date_str]:
+            self.page_listbox.insert(tk.END, title)
+        
+        # Select the first page by default
+        self.page_listbox.selection_set(0)
+        self.current_page_title = self.page_titles[date_str][0]
+
+    def add_page(self):
+        """Adds a new page with a user-defined title."""
+        date_str = self.current_date.isoformat()
+        
+        # Determine the next default page number
+        existing_nums = [
+            int(t.split()[-1]) for t in self.page_titles[date_str] 
+            if t.startswith("Page ") and t.split()[-1].isdigit()
+        ]
+        next_num = max(existing_nums) + 1 if existing_nums else 1
+        default_title = f"Page {next_num}"
+
+        new_title = simpledialog.askstring(
+            "New Page", "Enter page title:", initialvalue=default_title
+        )
+
+        if new_title and new_title not in self.page_titles[date_str]:
+            # Save current page before switching
+            self.save_notes(None) 
+            
+            self.page_titles[date_str].append(new_title)
+            self.save_pages_list(self.current_date)
+            
+            # Update Listbox and switch
+            self.page_listbox.insert(tk.END, new_title)
+            self.page_listbox.selection_clear(0, tk.END)
+            self.page_listbox.selection_set(tk.END)
+            self.current_page_title = new_title
+            
+            # Load empty content for the new page
+            self.text.delete('1.0', tk.END)
+            self.text.insert(tk.END, f"Start writing for '{new_title}' here...")
+            self.save_notes(None) # Save the initial content
+        elif new_title:
+            messagebox.showwarning("Warning", "Page title already exists.")
+
+    def delete_page(self):
+        """Deletes the currently selected page."""
+        selected_index = self.page_listbox.curselection()
+        if not selected_index:
+            return
+
+        page_title = self.page_titles[self.current_date.isoformat()][selected_index[0]]
+        
+        if len(self.page_titles[self.current_date.isoformat()]) == 1:
+            messagebox.showwarning("Warning", "Cannot delete the last page for the day.")
+            return
+
+        if messagebox.askyesno("Delete Page", f"Are you sure you want to delete the page '{page_title}' and its content?"):
+            date = self.current_date
+            
+            # 1. Delete the content file
+            content_file = self.get_page_content_file(date, page_title)
+            if os.path.exists(content_file):
+                os.remove(content_file)
+            
+            # 2. Update the page list
+            self.page_titles[date.isoformat()].pop(selected_index[0])
+            self.save_pages_list(date)
+
+            # 3. Update the UI and switch to the first page
+            self.load_pages_list(date)
+            self.load_notes_for_page()
+
+    def switch_page(self, event):
+        """Switches to the page selected in the Listbox."""
+        try:
+            selected_index = self.page_listbox.curselection()
+            if not selected_index:
+                return
+
+            new_title = self.page_titles[self.current_date.isoformat()][selected_index[0]]
+            
+            # Only switch if the title is different
+            if new_title != self.current_page_title:
+                self.save_notes(None) # Auto-save current page before switching
+                self.current_page_title = new_title
+                self.load_notes_for_page()
+
+        except IndexError:
+            pass # Handles case where selection is cleared
+    # [ID: PAGE_MANAGEMENT_END_004]
+
+    # [ID: CORE_SAVE_HELPER_START_005]
+    def _save_text_segment(self, content_list, text, tags):
+        """Helper to process and save a text segment with its formatting."""
+        # Use search to find the segment's starting position for tag inspection
+        # This is a robust way to handle non-contiguous text segments in dump()
+        start_index = self.text.search(text, '1.0', stopindex=tk.END, regexp=False)
+        if not start_index:
+            start_index = '1.0' 
+
+        color = None
+        size = self.default_font[1]
+        alignment = None
+
+        all_tags_at_index = self.text.tag_names(start_index)
+        
+        for tag in all_tags_at_index:
+            if tag.startswith('color_'):
+                color = tag.split('_')[1]
+            elif tag.startswith('size_'):
+                try:
+                    size = int(tag.split('_')[1])
+                except ValueError:
+                    pass
+            elif tag.startswith('align_'):
+                alignment = tag.split('_')[1]
+
+        content_list.append({
+            "type": "text", 
+            "text": text,
+            "tags": tags,
+            "color": color,
+            "size": size,
+            "alignment": alignment
+        })
+    # [ID: CORE_SAVE_HELPER_END_005]
+
+    # [ID: CORE_SAVE_START_006]
+    def save_notes(self, event):
+        """Saves the current page's content using the text.dump() method."""
+        date = self.current_date
+        notes_file = self.get_page_content_file(date, self.current_page_title)
+
+        content = []
+        
+        # Use dump() to get all content data including windows/images and tags
+        all_data = self.text.dump('1.0', tk.END + '-1c', tag=True, text=True, image=True, window=True)
+        
+        current_tags = []
+        current_text = ""
+        
+        for item in all_data:
+            data_type = item[0]
+            
+            if data_type == 'text':
+                text_segment = item[1]
+                if '\n' in text_segment:
+                    parts = text_segment.split('\n')
+                    
+                    if current_text or parts[0]:
+                        self._save_text_segment(content, current_text + parts[0], current_tags)
+                    current_text = ""
+                    
+                    content.append({"type": "text", "text": "\n", "tags": []})
+                    
+                    current_text = parts[1] 
+                    current_tags = []
+                else:
+                    current_text += text_segment
+
+            elif data_type == 'tag':
+                action = item[1]
+                tag_name = item[2]
+                
+                if tag_name in ('sel', 'insert') or tag_name.startswith(('color_', 'size_', 'align_')): 
+                    continue
+
+                if action == 'tagon':
+                    current_tags.append(tag_name)
+                elif action == 'tagoff' and tag_name in current_tags:
+                    current_tags.remove(tag_name)
+            
+            elif data_type == 'image':
+                if current_text:
+                    self._save_text_segment(content, current_text, current_tags)
+                    current_text = ""
+                
+                image_tag = item[1]
+                content.append({"type": "image", "tag": image_tag})
+                current_tags = []
+            
+            elif data_type == 'window': 
+                if current_text:
+                    self._save_text_segment(content, current_text, current_tags)
+                    current_text = ""
+                
+                widget_path = item[1]
+                
+                # Locate the TableFrame object using its internal widget path
+                table_obj = next((obj for obj in self.table_references.values() if obj._w == widget_path), None)
+                
+                if table_obj:
+                    table_data = table_obj.serialize() 
+                    content.append({"type": "table", "data": table_data}) 
+                
+                current_tags = []
+            
+        if current_text:
+            self._save_text_segment(content, current_text, current_tags)
+
+        data = {"date": date.strftime("%Y-%m-%d"), "page_title": self.current_page_title, "content": content}
+
+        try:
+            with open(notes_file, 'w') as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save notes: {e}")
+    # [ID: CORE_SAVE_END_006]
+
+    # [ID: CORE_LOAD_START_007]
+    def auto_save(self, event):
+        """Triggers save on key release."""
+        self.save_notes(event)
+
+    def load_notes_for_page(self):
+        """Clears current text and loads the saved notes for the current page."""
+        self.text.delete('1.0', tk.END)
+        self.images.clear()
+        self.image_references.clear()
+        self.table_references.clear()
+
+        date = self.current_date
+        notes_file = self.get_page_content_file(date, self.current_page_title)
+
+        for tag in self.text.tag_names():
+            if tag.startswith(('color_', 'size_', 'align_')):
+                self.text.tag_delete(tag)
+
+        if os.path.exists(notes_file):
+            try:
+                with open(notes_file, 'r') as f:
+                    data = json.load(f)
+                
+                for item in data.get("content", []):
+                    if item["type"] == "text":
+                        text_to_insert = item["text"]
+                        
+                        font_tags = list(item.get("tags", []))
+                        
+                        alignment = item.get("alignment")
+                        if alignment in ["left", "center", "right"]:
+                            font_tags.append(f"align_{alignment}")
+                        
+                        size = item.get("size", self.default_font[1])
+                        size_tag = f"size_{size}"
+                        if size_tag not in self.text.tag_names():
+                             self.text.tag_configure(size_tag, font=(self.default_font[0], size))
+                        font_tags.append(size_tag)
+
+                        color = item.get("color")
+                        if color:
+                            color_tag = f"color_{color}"
+                            if color_tag not in self.text.tag_names():
+                                self.text.tag_configure(color_tag, foreground=color)
+                            font_tags.append(color_tag)
+                        
+                        self.text.insert(tk.END, text_to_insert, font_tags)
+                        
+                    elif item["type"] == "image":
+                        self.load_image_from_file(item["tag"])
+
+                    elif item["type"] == "table":
+                        self.load_table_from_data(item["data"])
+
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load notes: {e}")
+        else:
+            self.text.insert(tk.END, f"Start writing for '{self.current_page_title}' here...")
+        
+        self.text.config(font=self.default_font)
+
+    def load_date_and_pages(self, date):
+        """Loads pages for a date, then loads the content for the first page."""
+        self.current_date = date
+        self.load_pages_list(date)
+        self.load_notes_for_page()
+
+    def load_selected_date(self, event):
+        """Event handler for calendar selection."""
+        self.save_notes(None) 
+        
+        selected_date_str = self.calendar.get_date()
+        selected_date = datetime.datetime.strptime(selected_date_str, "%Y-%m-%d").date()
+        
+        self.load_date_and_pages(selected_date)
+    # [ID: CORE_LOAD_END_007]
+
+    # [ID: FORMATTING_START_008]
+    # --- (Rich text formatting methods) ---
+    def toggle_tag(self, tag_name):
+        try:
+            selection = self.text.tag_ranges(tk.SEL)
+            if not selection:
+                return
+            start, end = selection
+            
+            if tag_name in self.text.tag_names(start):
+                self.text.tag_remove(tag_name, start, end)
+            else:
+                self.text.tag_add(tag_name, start, end)
+                
+            self.auto_save(None)
+            
+        except tk.TclError:
+            pass
+
+    def toggle_bold(self, event=None):
+        self.toggle_tag("bold")
+        return 'break'
+
+    def toggle_italic(self, event=None):
+        self.toggle_tag("italic")
+        return 'break'
+
+    def toggle_underline(self, event=None):
+        self.toggle_tag("underline")
+        return 'break'
+    
+    def align_text(self, alignment_type):
+        tag_to_apply = f"align_{alignment_type}"
+        all_alignment_tags = ["align_left", "align_center", "align_right"]
+
+        try:
+            selection = self.text.tag_ranges(tk.SEL)
+            if selection:
+                start, end = selection
+            else:
+                start = self.text.index("insert linestart")
+                end = self.text.index("insert lineend + 1c")
+                
+            for tag in all_alignment_tags:
+                self.text.tag_remove(tag, start, end)
+                
+            self.text.tag_add(tag_to_apply, start, end)
+            
+            self.auto_save(None)
+
+        except tk.TclError:
+            pass
+        
+    def change_color(self):
+        color_code = colorchooser.askcolor(title="Choose Text Color")[1]
+        if color_code:
+            try:
+                selection = self.text.tag_ranges(tk.SEL)
+                if not selection: return
+                start, end = selection
+                color_tag = f"color_{color_code}"
+                if color_tag not in self.text.tag_names():
+                    self.text.tag_configure(color_tag, foreground=color_code)
+                for tag in self.text.tag_names(start):
+                    if tag.startswith('color_'):
+                        self.text.tag_remove(tag, start, end)
+                self.text.tag_add(color_tag, start, end)
+                self.auto_save(None)
+            except tk.TclError: pass
+
+    def change_font_size(self, delta):
+        try:
+            selection = self.text.tag_ranges(tk.SEL)
+            start, end = selection if selection else (self.text.index(tk.INSERT + " -1c"), self.text.index(tk.INSERT))
+            if start == end and not selection: return
+
+            current_tags = self.text.tag_names(start)
+            current_size = self.default_font[1]
+            for tag in current_tags:
+                if tag.startswith('size_'):
+                    current_size = int(tag.split('_')[1])
+                    self.text.tag_remove(tag, start, end)
+                    break
+            
+            new_size = max(8, min(48, current_size + delta))
+            new_size_tag = f"size_{new_size}"
+
+            if new_size_tag not in self.text.tag_names():
+                self.text.tag_configure(new_size_tag, font=(self.default_font[0], new_size))
+            
+            self.text.tag_add(new_size_tag, start, end)
+            self.auto_save(None)
+
+        except tk.TclError: pass
+    # [ID: FORMATTING_END_008]
+    
+    # [ID: CLIPBOARD_START_009]
+    def perform_copy(self, event):
+        """Copies selected text to the clipboard."""
+        try:
+            self.root.clipboard_clear()
+            selected_text = self.text.get(tk.SEL_FIRST, tk.SEL_LAST)
+            self.root.clipboard_append(selected_text)
+        except tk.TclError:
+            pass 
+        return "break" 
+
+    def perform_cut(self, event):
+        """Cuts selected text (copies and deletes)."""
+        try:
+            self.perform_copy(event)
+            self.text.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            self.auto_save(None)
+        except tk.TclError:
+            pass
+        return "break" 
+
+    def paste_from_clipboard(self, event):
+        """Pastes text from clipboard, replacing selection if present."""
+        try:
+            if self.text.tag_ranges(tk.SEL):
+                self.text.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                
+            clipboard_data = self.root.clipboard_get()
+            self.text.insert(tk.INSERT, clipboard_data)
+            self.auto_save(None)
+        
+        except tk.TclError:
+            try:
+                img = ImageGrab.grabclipboard()
+                if img and isinstance(img, Image.Image):
+                    if self.text.tag_ranges(tk.SEL):
+                        self.text.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                        
+                    self.save_and_insert_clipboard_image(img)
+                    self.auto_save(None)
+            except Exception:
+                pass 
+        return "break"
+    # [ID: CLIPBOARD_END_009]
+    
+    # [ID: UNDO_REDO_START_010]
+    def perform_undo(self, event):
+        """Performs the undo action."""
+        try:
+            self.text.edit_undo()
+        except tk.TclError:
+            pass
+        return "break" 
+
+    def perform_redo(self, event):
+        """Performs the redo action."""
+        try:
+            self.text.edit_redo()
+        except tk.TclError:
+            pass
+        return "break" 
+    # [ID: UNDO_REDO_END_010]
+
+    # [ID: TABLE_HANDLING_START_NEW]
+    def add_table_attachment(self):
+        """Creates a new table and embeds it into the text widget."""
+        
+        # Generate a unique key for the reference dictionary
+        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        
+        # 1. Create the TableFrame object
+        table_frame = TableFrame(self.text, self, rows=3, cols=3)
+
+        # 2. Store a reference to prevent garbage collection
+        self.table_references[table_key] = table_frame
+
+        # 3. Embed the frame into the Text widget at the current cursor position
+        self.text.window_create(tk.INSERT, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
+        self.text.insert(tk.INSERT, "\n") # Add newline after table for better spacing
+        
+        self.auto_save(None)
+
+    def load_table_from_data(self, table_data):
+        """Loads a table from saved data and embeds it into the text widget."""
+        
+        # Generate a unique key for the reference dictionary
+        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
+        # 1. Create the TableFrame object, passing the saved data
+        table_frame = TableFrame(self.text, self, initial_data=table_data)
+
+        # 2. Store the reference
+        self.table_references[table_key] = table_frame
+        
+        # 3. Embed the frame
+        self.text.window_create(tk.END, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
+        self.text.insert(tk.END, "\n") # Add newline after table
+    # [ID: TABLE_HANDLING_END_NEW]
+
+    # [ID: IMAGE_HANDLING_START_011]
+    # --- (Image handling methods) ---
+    def add_image_attachment(self):
+        filepath = filedialog.askopenfilename(
+            defaultextension=".png",
+            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.gif")]
+        )
+        if not filepath: return
+        date_folder = self.get_attachments_folder(self.current_date)
+        filename = os.path.basename(filepath)
+        unique_filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{filename}"
+        destination_path = os.path.join(date_folder, unique_filename)
+        try:
+            shutil.copy(filepath, destination_path)
+            self.insert_image_into_text(destination_path)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to add image: {e}")
+
+    def save_and_insert_clipboard_image(self, img):
+        date_folder = self.get_attachments_folder(self.current_date)
+        unique_filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_clipboard.png"
+        destination_path = os.path.join(date_folder, unique_filename)
+        img.save(destination_path, "PNG")
+        self.insert_image_into_text(destination_path)
+
+    def insert_image_into_text(self, image_path):
+        try:
+            img = Image.open(image_path)
+            max_width = 400
+            if img.width > max_width:
+                height = int((max_width / img.width) * img.height)
+                img = img.resize((max_width, height), Image.Resampling.LANCZOS)
+            
+            photo = ImageTk.PhotoImage(img)
+            image_tag = os.path.basename(image_path)
+            
+            # Store the reference for garbage collection
+            self.image_references[image_tag] = photo
+            
+            # Create a Label for the image
+            image_label = tk.Label(self.text, image=photo)
+            
+            # Embed the label. The 'name' option is removed (FIX for TclError).
+            self.text.window_create(tk.INSERT, window=image_label)
+            self.text.insert(tk.END, "\n")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load/insert image: {e}")
+
+    def load_image_from_file(self, image_tag):
+        image_path = os.path.join(self.get_attachments_folder(self.current_date), image_tag)
+        if os.path.exists(image_path):
+            self.insert_image_into_text(image_path)
+        else:
+            self.text.insert(tk.END, f"[IMAGE MISSING: {image_tag}]\n")
+
+    def clear_all_attachments(self):
+        if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete ALL attachments for this day? This action is irreversible."):
+            attachments_folder = self.get_attachments_folder(self.current_date)
+            try:
+                if os.path.exists(attachments_folder):
+                    shutil.rmtree(attachments_folder)
+                
+                self.load_date_and_pages(self.current_date)
+                messagebox.showinfo("Success", "All attachments for this date have been cleared.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete attachments: {e}")
+    # [ID: IMAGE_HANDLING_END_011]
+
+
+# [ID: MAIN_EXECUTION_START_012]
+if __name__ == '__main__':
+    root = tk.Tk()
+    app = DailyNotesApp(root)
+    root.mainloop()
+# [ID: MAIN_EXECUTION_END_012]
