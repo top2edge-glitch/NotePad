@@ -3,7 +3,7 @@ import datetime
 import json
 import shutil
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, colorchooser
+from tkinter import filedialog, messagebox, simpledialog, colorchooser, ttk
 from tkcalendar import Calendar
 from PIL import Image, ImageTk, ImageGrab
 from io import BytesIO
@@ -134,10 +134,30 @@ class DailyNotesApp:
         self.images = []
         self.image_references = {}
         self.table_references = {} # NEW: To hold references to embedded TableFrame objects
+        self.save_job = None
+        self.last_saved_at = None
+        self.general_save_job = None
+        self.last_general_saved_at = None
+        self.dragging_image_tag = None
+        self.image_drag_start = None
+        self.resizing_image = False
+        self.header_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Ready")
+        self.stats_var = tk.StringVar(value="Words: 0 | Chars: 0 | Ln 1, Col 0")
 
         # --- UI SETUP ---
+        # Notebook for main and general notes
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.bind("<<NotebookTabChanged>>", self.handle_tab_change)
+
+        main_tab = tk.Frame(self.notebook)
+        general_tab = tk.Frame(self.notebook)
+        self.notebook.add(main_tab, text="Daily Notes")
+        self.notebook.add(general_tab, text="General Notes")
+
         # Left frame: Calendar + Page Selector
-        left_frame = tk.Frame(self.root, padx=10, pady=10)
+        left_frame = tk.Frame(main_tab, padx=10, pady=10)
         left_frame.pack(side=tk.LEFT, fill=tk.Y)
 
         # 1. Calendar
@@ -166,8 +186,14 @@ class DailyNotesApp:
         tk.Button(page_btn_frame, text="Del Page", command=self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Right frame: Notes area
-        right_frame = tk.Frame(self.root, padx=10, pady=10)
+        right_frame = tk.Frame(main_tab, padx=10, pady=10)
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Header
+        header_frame = tk.Frame(right_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        header_label = tk.Label(header_frame, textvariable=self.header_var, anchor="w", font=("Arial", 11, "bold"))
+        header_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Toolbar
         toolbar = tk.Frame(right_frame)
@@ -203,7 +229,32 @@ class DailyNotesApp:
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.text.bind("<KeyRelease>", self.auto_save)
-        
+        self.text.bind("<KeyRelease>", self.update_status_metrics, add="+")
+        self.text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
+
+        # Status bar
+        status_frame = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor="w")
+        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=2)
+        stats_label = tk.Label(status_frame, textvariable=self.stats_var, anchor="e")
+        stats_label.pack(side=tk.RIGHT, padx=6, pady=2)
+
+        # General notes UI
+        general_header = tk.Label(general_tab, text="General Notes", anchor="w", font=("Arial", 11, "bold"))
+        general_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        general_text_frame = tk.Frame(general_tab, padx=10, pady=10)
+        general_text_frame.pack(fill=tk.BOTH, expand=True)
+        self.general_text = tk.Text(general_text_frame, wrap=tk.WORD, font=("Arial", 12), undo=True)
+        general_scrollbar = tk.Scrollbar(general_text_frame, command=self.general_text.yview)
+        self.general_text.configure(yscrollcommand=general_scrollbar.set)
+        general_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.general_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.general_text.bind("<KeyRelease>", self.auto_save_general)
+        self.general_text.bind("<KeyRelease>", self.update_status_metrics, add="+")
+        self.general_text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
+
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
         self.text.bind("<Control-y>", self.perform_redo)
@@ -225,6 +276,9 @@ class DailyNotesApp:
         self.text.tag_configure("align_right", justify=tk.RIGHT)
 
         self.load_date_and_pages(self.current_date)
+        self.load_general_notes()
+        self.update_header()
+        self.update_status_metrics()
     # [ID: INIT_END_002]
 
     # [ID: FILE_MANAGEMENT_START_003]
@@ -246,6 +300,9 @@ class DailyNotesApp:
         folder = os.path.join(self.get_date_folder(date), ATTACHMENTS_DIR_NAME)
         os.makedirs(folder, exist_ok=True)
         return folder
+
+    def get_general_notes_file(self):
+        return os.path.join(NOTES_BASE_DIR, "general_notes.json")
     # [ID: FILE_MANAGEMENT_END_003]
 
     # [ID: PAGE_MANAGEMENT_START_004]
@@ -408,6 +465,7 @@ class DailyNotesApp:
     # [ID: CORE_SAVE_START_006]
     def save_notes(self, event):
         """Saves the current page's content using the text.dump() method."""
+        self.save_job = None
         date = self.current_date
         notes_file = self.get_page_content_file(date, self.current_page_title)
 
@@ -456,7 +514,12 @@ class DailyNotesApp:
                     current_text = ""
                 
                 image_tag = item[1]
-                content.append({"type": "image", "tag": image_tag})
+                image_data = self.image_references.get(image_tag, {})
+                content.append({
+                    "type": "image",
+                    "tag": image_tag,
+                    "size": image_data.get("size")
+                })
                 current_tags = []
             
             elif data_type == 'window': 
@@ -483,14 +546,42 @@ class DailyNotesApp:
         try:
             with open(notes_file, 'w') as f:
                 json.dump(data, f, indent=4)
+            self.last_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved at {self.last_saved_at.strftime('%H:%M:%S')}")
+            self.update_status_metrics()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save notes: {e}")
     # [ID: CORE_SAVE_END_006]
 
+    def save_general_notes(self, event):
+        self.general_save_job = None
+        notes_file = self.get_general_notes_file()
+        data = {
+            "updated_at": datetime.datetime.now().isoformat(),
+            "content": self.general_text.get("1.0", "end-1c")
+        }
+        try:
+            with open(notes_file, 'w') as f:
+                json.dump(data, f, indent=4)
+            self.last_general_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved general notes at {self.last_general_saved_at.strftime('%H:%M:%S')}")
+            self.update_status_metrics()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save general notes: {e}")
+
     # [ID: CORE_LOAD_START_007]
     def auto_save(self, event):
-        """Triggers save on key release."""
-        self.save_notes(event)
+        """Schedules a save after a short debounce window."""
+        if self.save_job is not None:
+            self.root.after_cancel(self.save_job)
+        self.status_var.set("Saving...")
+        self.save_job = self.root.after(500, lambda: self.save_notes(event))
+
+    def auto_save_general(self, event):
+        if self.general_save_job is not None:
+            self.root.after_cancel(self.general_save_job)
+        self.status_var.set("Saving general notes...")
+        self.general_save_job = self.root.after(500, lambda: self.save_general_notes(event))
 
     def load_notes_for_page(self):
         """Clears current text and loads the saved notes for the current page."""
@@ -537,7 +628,7 @@ class DailyNotesApp:
                         self.text.insert(tk.END, text_to_insert, font_tags)
                         
                     elif item["type"] == "image":
-                        self.load_image_from_file(item["tag"])
+                        self.load_image_from_file(item["tag"], item.get("size"))
 
                     elif item["type"] == "table":
                         self.load_table_from_data(item["data"])
@@ -549,6 +640,8 @@ class DailyNotesApp:
             self.text.insert(tk.END, f"Start writing for '{self.current_page_title}' here...")
         
         self.text.config(font=self.default_font)
+        self.update_header()
+        self.update_status_metrics()
 
     def load_date_and_pages(self, date):
         """Loads pages for a date, then loads the content for the first page."""
@@ -565,6 +658,173 @@ class DailyNotesApp:
         
         self.load_date_and_pages(selected_date)
     # [ID: CORE_LOAD_END_007]
+
+    def load_general_notes(self):
+        notes_file = self.get_general_notes_file()
+        if os.path.exists(notes_file):
+            try:
+                with open(notes_file, 'r') as f:
+                    data = json.load(f)
+                self.general_text.delete("1.0", tk.END)
+                self.general_text.insert(tk.END, data.get("content", ""))
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load general notes: {e}")
+
+    def handle_tab_change(self, event):
+        self.update_header()
+        self.update_status_metrics()
+
+    def get_active_text_widget(self):
+        current_tab = self.notebook.select()
+        if current_tab == str(self.notebook.tabs()[1]):
+            return self.general_text
+        return self.text
+
+    def update_header(self):
+        if self.notebook.select() == str(self.notebook.tabs()[1]):
+            self.header_var.set("General Notes")
+            return
+        date_str = self.current_date.strftime("%B %d, %Y")
+        self.header_var.set(f"{date_str} • {self.current_page_title}")
+
+    def update_status_metrics(self, event=None):
+        active_text = self.get_active_text_widget()
+        content = active_text.get("1.0", "end-1c")
+        words = len([word for word in content.split() if word.strip()])
+        chars = len(content)
+        line, col = active_text.index(tk.INSERT).split(".")
+        self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
+
+    def insert_image_with_size(self, image_path, size):
+        try:
+            img = Image.open(image_path)
+            width, height = size
+            img = img.resize((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_tag = os.path.basename(image_path)
+
+            image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (width, height),
+                "path": image_path
+            }
+
+            self.text.window_create(tk.INSERT, window=image_label)
+            self.text.insert(tk.END, "\n")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load/insert image: {e}")
+
+    def handle_image_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        image_data = self.image_references[image_tag]
+        current_width, current_height = image_data["size"]
+        scale = 1.1 if event.delta > 0 else 0.9
+        new_width = max(100, min(800, int(current_width * scale)))
+        new_height = max(100, min(800, int(current_height * scale)))
+        image_path = image_data["path"]
+
+        try:
+            img = Image.open(image_path)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (new_width, new_height)
+            image_data["label"].configure(image=photo)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
+
+    def find_window_index(self, widget_path):
+        for item in self.text.dump('1.0', tk.END + '-1c', window=True):
+            data_type = item[0]
+            if data_type == 'window' and item[1] == widget_path:
+                return item[2]
+        return None
+
+    def start_image_drag(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if image_tag:
+            self.dragging_image_tag = image_tag
+            self.image_drag_start = (event.x_root, event.y_root)
+
+    def track_image_drag(self, event):
+        if self.dragging_image_tag:
+            self.image_drag_last = (event.x_root, event.y_root)
+
+    def end_image_drag(self, event):
+        image_tag = getattr(self, "dragging_image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        if self.resizing_image:
+            self.dragging_image_tag = None
+            self.image_drag_start = None
+            self.resizing_image = False
+            return
+
+        start = self.image_drag_start
+        end = (event.x_root, event.y_root)
+        if not start or (abs(end[0] - start[0]) < 5 and abs(end[1] - start[1]) < 5):
+            self.dragging_image_tag = None
+            self.image_drag_start = None
+            return
+
+        image_data = self.image_references[image_tag]
+        widget_path = image_data["label"]._w
+        current_index = self.find_window_index(widget_path)
+        if current_index:
+            self.text.delete(current_index)
+
+        x = event.x_root - self.text.winfo_rootx()
+        y = event.y_root - self.text.winfo_rooty()
+        target_index = self.text.index(f"@{x},{y}")
+        self.text.window_create(target_index, window=image_data["label"])
+        self.text.insert(target_index, "\n")
+        self.dragging_image_tag = None
+        self.image_drag_start = None
+        self.auto_save(None)
+
+    def handle_image_drag_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+        self.resizing_image = True
+
+        image_data = self.image_references[image_tag]
+        start = self.image_drag_start
+        if not start:
+            return
+
+        dx = event.x_root - start[0]
+        dy = event.y_root - start[1]
+        current_width, current_height = image_data["size"]
+        new_width = max(100, min(800, current_width + dx))
+        new_height = max(100, min(800, current_height + dy))
+
+        image_path = image_data["path"]
+        try:
+            img = Image.open(image_path)
+            img = img.resize((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (int(new_width), int(new_height))
+            image_data["label"].configure(image=photo)
+            self.image_drag_start = (event.x_root, event.y_root)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
 
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
@@ -798,11 +1058,22 @@ class DailyNotesApp:
             photo = ImageTk.PhotoImage(img)
             image_tag = os.path.basename(image_path)
             
-            # Store the reference for garbage collection
-            self.image_references[image_tag] = photo
-            
             # Create a Label for the image
             image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            # Store the reference for garbage collection
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (img.width, img.height),
+                "path": image_path
+            }
             
             # Embed the label. The 'name' option is removed (FIX for TclError).
             self.text.window_create(tk.INSERT, window=image_label)
@@ -811,10 +1082,10 @@ class DailyNotesApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not load/insert image: {e}")
 
-    def load_image_from_file(self, image_tag):
+    def load_image_from_file(self, image_tag, size=None):
         image_path = os.path.join(self.get_attachments_folder(self.current_date), image_tag)
         if os.path.exists(image_path):
-            self.insert_image_into_text(image_path)
+            self.insert_image_into_text(image_path) if not size else self.insert_image_with_size(image_path, size)
         else:
             self.text.insert(tk.END, f"[IMAGE MISSING: {image_tag}]\n")
 
