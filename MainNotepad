@@ -138,6 +138,7 @@ class DailyNotesApp:
         self.last_saved_at = None
         self.general_save_job = None
         self.last_general_saved_at = None
+        self.dragging_image_tag = None
         self.header_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Ready")
         self.stats_var = tk.StringVar(value="Words: 0 | Chars: 0 | Ln 1, Col 0")
@@ -511,7 +512,12 @@ class DailyNotesApp:
                     current_text = ""
                 
                 image_tag = item[1]
-                content.append({"type": "image", "tag": image_tag})
+                image_data = self.image_references.get(image_tag, {})
+                content.append({
+                    "type": "image",
+                    "tag": image_tag,
+                    "size": image_data.get("size")
+                })
                 current_tags = []
             
             elif data_type == 'window': 
@@ -620,7 +626,7 @@ class DailyNotesApp:
                         self.text.insert(tk.END, text_to_insert, font_tags)
                         
                     elif item["type"] == "image":
-                        self.load_image_from_file(item["tag"])
+                        self.load_image_from_file(item["tag"], item.get("size"))
 
                     elif item["type"] == "table":
                         self.load_table_from_data(item["data"])
@@ -686,6 +692,86 @@ class DailyNotesApp:
         chars = len(content)
         line, col = active_text.index(tk.INSERT).split(".")
         self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
+
+    def insert_image_with_size(self, image_path, size):
+        try:
+            img = Image.open(image_path)
+            width, height = size
+            img = img.resize((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_tag = os.path.basename(image_path)
+
+            image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<Control-MouseWheel>", self.handle_image_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (width, height),
+                "path": image_path
+            }
+
+            self.text.window_create(tk.INSERT, window=image_label)
+            self.text.insert(tk.END, "\n")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load/insert image: {e}")
+
+    def handle_image_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        image_data = self.image_references[image_tag]
+        current_width, current_height = image_data["size"]
+        scale = 1.1 if event.delta > 0 else 0.9
+        new_width = max(100, min(800, int(current_width * scale)))
+        new_height = max(100, min(800, int(current_height * scale)))
+        image_path = image_data["path"]
+
+        try:
+            img = Image.open(image_path)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (new_width, new_height)
+            image_data["label"].configure(image=photo)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
+
+    def find_window_index(self, widget_path):
+        for item in self.text.dump('1.0', tk.END + '-1c', window=True):
+            data_type = item[0]
+            if data_type == 'window' and item[1] == widget_path:
+                return item[2]
+        return None
+
+    def start_image_drag(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if image_tag:
+            self.dragging_image_tag = image_tag
+
+    def end_image_drag(self, event):
+        image_tag = getattr(self, "dragging_image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        image_data = self.image_references[image_tag]
+        widget_path = image_data["label"]._w
+        current_index = self.find_window_index(widget_path)
+        if current_index:
+            self.text.delete(current_index)
+
+        x = event.x_root - self.text.winfo_rootx()
+        y = event.y_root - self.text.winfo_rooty()
+        target_index = self.text.index(f"@{x},{y}")
+        self.text.window_create(target_index, window=image_data["label"])
+        self.text.insert(target_index, "\n")
+        self.dragging_image_tag = None
+        self.auto_save(None)
 
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
@@ -919,11 +1005,20 @@ class DailyNotesApp:
             photo = ImageTk.PhotoImage(img)
             image_tag = os.path.basename(image_path)
             
-            # Store the reference for garbage collection
-            self.image_references[image_tag] = photo
-            
             # Create a Label for the image
             image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<Control-MouseWheel>", self.handle_image_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            # Store the reference for garbage collection
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (img.width, img.height),
+                "path": image_path
+            }
             
             # Embed the label. The 'name' option is removed (FIX for TclError).
             self.text.window_create(tk.INSERT, window=image_label)
@@ -932,10 +1027,10 @@ class DailyNotesApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not load/insert image: {e}")
 
-    def load_image_from_file(self, image_tag):
+    def load_image_from_file(self, image_tag, size=None):
         image_path = os.path.join(self.get_attachments_folder(self.current_date), image_tag)
         if os.path.exists(image_path):
-            self.insert_image_into_text(image_path)
+            self.insert_image_into_text(image_path) if not size else self.insert_image_with_size(image_path, size)
         else:
             self.text.insert(tk.END, f"[IMAGE MISSING: {image_tag}]\n")
 
