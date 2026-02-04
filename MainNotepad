@@ -139,6 +139,8 @@ class DailyNotesApp:
         self.general_save_job = None
         self.last_general_saved_at = None
         self.dragging_image_tag = None
+        self.image_drag_start = None
+        self.resizing_image = False
         self.header_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Ready")
         self.stats_var = tk.StringVar(value="Words: 0 | Chars: 0 | Ln 1, Col 0")
@@ -703,8 +705,10 @@ class DailyNotesApp:
 
             image_label = tk.Label(self.text, image=photo)
             image_label.image_tag = image_tag
-            image_label.bind("<Control-MouseWheel>", self.handle_image_resize)
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
             image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
             image_label.bind("<ButtonRelease-1>", self.end_image_drag)
 
             self.image_references[image_tag] = {
@@ -753,10 +757,28 @@ class DailyNotesApp:
         image_tag = getattr(event.widget, "image_tag", None)
         if image_tag:
             self.dragging_image_tag = image_tag
+            self.image_drag_start = (event.x_root, event.y_root)
+
+    def track_image_drag(self, event):
+        if self.dragging_image_tag:
+            self.image_drag_last = (event.x_root, event.y_root)
 
     def end_image_drag(self, event):
         image_tag = getattr(self, "dragging_image_tag", None)
         if not image_tag or image_tag not in self.image_references:
+            return
+
+        if self.resizing_image:
+            self.dragging_image_tag = None
+            self.image_drag_start = None
+            self.resizing_image = False
+            return
+
+        start = self.image_drag_start
+        end = (event.x_root, event.y_root)
+        if not start or (abs(end[0] - start[0]) < 5 and abs(end[1] - start[1]) < 5):
+            self.dragging_image_tag = None
+            self.image_drag_start = None
             return
 
         image_data = self.image_references[image_tag]
@@ -771,7 +793,38 @@ class DailyNotesApp:
         self.text.window_create(target_index, window=image_data["label"])
         self.text.insert(target_index, "\n")
         self.dragging_image_tag = None
+        self.image_drag_start = None
         self.auto_save(None)
+
+    def handle_image_drag_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+        self.resizing_image = True
+
+        image_data = self.image_references[image_tag]
+        start = self.image_drag_start
+        if not start:
+            return
+
+        dx = event.x_root - start[0]
+        dy = event.y_root - start[1]
+        current_width, current_height = image_data["size"]
+        new_width = max(100, min(800, current_width + dx))
+        new_height = max(100, min(800, current_height + dy))
+
+        image_path = image_data["path"]
+        try:
+            img = Image.open(image_path)
+            img = img.resize((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (int(new_width), int(new_height))
+            image_data["label"].configure(image=photo)
+            self.image_drag_start = (event.x_root, event.y_root)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
 
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
@@ -1008,8 +1061,10 @@ class DailyNotesApp:
             # Create a Label for the image
             image_label = tk.Label(self.text, image=photo)
             image_label.image_tag = image_tag
-            image_label.bind("<Control-MouseWheel>", self.handle_image_resize)
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
             image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
             image_label.bind("<ButtonRelease-1>", self.end_image_drag)
 
             # Store the reference for garbage collection
