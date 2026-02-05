@@ -955,7 +955,11 @@ class DailyNotesApp:
                 self.text.delete(tk.SEL_FIRST, tk.SEL_LAST)
                 
             clipboard_data = self.root.clipboard_get()
-            self.text.insert(tk.INSERT, clipboard_data)
+            table_data = self.parse_clipboard_table(clipboard_data)
+            if table_data:
+                self.insert_table_from_data(table_data, insert_index=tk.INSERT)
+            else:
+                self.text.insert(tk.INSERT, clipboard_data)
             self.auto_save(None)
         
         except tk.TclError:
@@ -1009,21 +1013,42 @@ class DailyNotesApp:
         
         self.auto_save(None)
 
+    def parse_clipboard_table(self, clipboard_data):
+        """Parses tabular clipboard text (e.g. Excel) into table data."""
+        if not clipboard_data or "\t" not in clipboard_data:
+            return None
+
+        rows = [row for row in clipboard_data.rstrip("\n").split("\n") if row != ""]
+        if not rows:
+            return None
+
+        parsed_rows = [row.split("\t") for row in rows]
+        col_count = max(len(row) for row in parsed_rows)
+        if col_count == 0:
+            return None
+
+        cell_data = {}
+        for r, row in enumerate(parsed_rows):
+            for c in range(col_count):
+                cell_data[f"{r},{c}"] = row[c] if c < len(row) else ""
+
+        return {
+            "rows": len(parsed_rows),
+            "cols": col_count,
+            "cell_data": cell_data
+        }
+
+    def insert_table_from_data(self, table_data, insert_index=tk.END):
+        """Embeds a table in the text widget using provided table data."""
+        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        table_frame = TableFrame(self.text, self, initial_data=table_data)
+        self.table_references[table_key] = table_frame
+        self.text.window_create(insert_index, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
+        self.text.insert(insert_index, "\n")
+
     def load_table_from_data(self, table_data):
         """Loads a table from saved data and embeds it into the text widget."""
-        
-        # Generate a unique key for the reference dictionary
-        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-
-        # 1. Create the TableFrame object, passing the saved data
-        table_frame = TableFrame(self.text, self, initial_data=table_data)
-
-        # 2. Store the reference
-        self.table_references[table_key] = table_frame
-        
-        # 3. Embed the frame
-        self.text.window_create(tk.END, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
-        self.text.insert(tk.END, "\n") # Add newline after table
+        self.insert_table_from_data(table_data, insert_index=tk.END)
     # [ID: TABLE_HANDLING_END_NEW]
 
     # [ID: IMAGE_HANDLING_START_011]
