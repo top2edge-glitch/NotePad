@@ -161,6 +161,7 @@ class DailyNotesApp:
         self.current_page_title = "Page 1" 
         self.page_titles = {} 
         self.tasks = []
+        self.archived_tasks = []
 
         self.images = []
         self.image_references = {}
@@ -384,15 +385,29 @@ class DailyNotesApp:
 
         self.create_toolbar_button(task_form, "Add Task", self.add_task).grid(row=1, column=4, sticky="w", padx=(10, 0))
 
-        task_list_frame = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_tabs = ttk.Notebook(tasks_tab)
+        task_tabs.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.task_tabs = task_tabs
+
+        tasks_list_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
+        archives_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
+        task_tabs.add(tasks_list_tab, text="Active Tasks")
+        task_tabs.add(archives_tab, text="Archives")
+
+        task_list_frame = tk.Frame(tasks_list_tab, bg=self.ui_colors["bg"])
         task_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.tasks_tree = ttk.Treeview(task_list_frame, columns=("task", "star"), show="headings")
+        self.tasks_tree = ttk.Treeview(task_list_frame, columns=("index", "task", "due", "star"), show="headings")
+        self.tasks_tree.heading("index", text="#")
         self.tasks_tree.heading("task", text="Task")
+        self.tasks_tree.heading("due", text="Due Date")
         self.tasks_tree.heading("star", text="Star")
-        self.tasks_tree.column("task", width=360, anchor="w")
+        self.tasks_tree.column("index", width=40, anchor="center")
+        self.tasks_tree.column("task", width=320, anchor="w")
+        self.tasks_tree.column("due", width=120, anchor="center")
         self.tasks_tree.column("star", width=60, anchor="center")
         self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.tasks_tree.tag_configure("overdue", foreground="red")
+        self.tasks_tree.bind("<Double-1>", self.edit_task_due_date)
 
         tasks_scroll = tk.Scrollbar(task_list_frame, command=self.tasks_tree.yview)
         tasks_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -401,7 +416,27 @@ class DailyNotesApp:
         task_actions = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
         task_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
         self.create_toolbar_button(task_actions, "Toggle Star", self.toggle_task_star).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(task_actions, "Mark Completed", self.complete_task).pack(side=tk.LEFT, padx=2)
         self.create_toolbar_button(task_actions, "Delete Task", self.delete_task).pack(side=tk.LEFT, padx=2)
+
+        archive_list_frame = tk.Frame(archives_tab, bg=self.ui_colors["bg"])
+        archive_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.archives_tree = ttk.Treeview(archive_list_frame, columns=("index", "task", "due", "star", "done"), show="headings")
+        self.archives_tree.heading("index", text="#")
+        self.archives_tree.heading("task", text="Task")
+        self.archives_tree.heading("due", text="Due Date")
+        self.archives_tree.heading("star", text="Star")
+        self.archives_tree.heading("done", text="Completed")
+        self.archives_tree.column("index", width=40, anchor="center")
+        self.archives_tree.column("task", width=280, anchor="w")
+        self.archives_tree.column("due", width=120, anchor="center")
+        self.archives_tree.column("star", width=60, anchor="center")
+        self.archives_tree.column("done", width=120, anchor="center")
+        self.archives_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        archives_scroll = tk.Scrollbar(archive_list_frame, command=self.archives_tree.yview)
+        archives_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.archives_tree.configure(yscrollcommand=archives_scroll.set)
 
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
@@ -451,6 +486,9 @@ class DailyNotesApp:
 
     def get_tasks_file(self):
         return os.path.join(NOTES_BASE_DIR, TASKS_FILE)
+
+    def get_archives_file(self):
+        return os.path.join(NOTES_BASE_DIR, "tasks_archives.json")
     # [ID: FILE_MANAGEMENT_END_003]
 
     # [ID: PAGE_MANAGEMENT_START_004]
@@ -926,6 +964,22 @@ class DailyNotesApp:
         self.save_tasks()
         self.render_tasks()
 
+    def complete_task(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        task = next((task for task in self.tasks if task["id"] == task_id), None)
+        if not task:
+            return
+        task["completed_at"] = datetime.datetime.now().isoformat()
+        self.tasks = [item for item in self.tasks if item["id"] != task_id]
+        self.archived_tasks.append(task)
+        self.save_tasks()
+        self.save_archives()
+        self.render_tasks()
+        self.render_archives()
+
     def save_tasks(self):
         tasks_file = self.get_tasks_file()
         try:
@@ -943,6 +997,25 @@ class DailyNotesApp:
             except Exception:
                 self.tasks = []
         self.render_tasks()
+        self.load_archives()
+
+    def save_archives(self):
+        archives_file = self.get_archives_file()
+        try:
+            with open(archives_file, 'w') as f:
+                json.dump(self.archived_tasks, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save archives: {e}")
+
+    def load_archives(self):
+        archives_file = self.get_archives_file()
+        if os.path.exists(archives_file):
+            try:
+                with open(archives_file, 'r') as f:
+                    self.archived_tasks = json.load(f)
+            except Exception:
+                self.archived_tasks = []
+        self.render_archives()
 
     def render_tasks(self):
         for item in self.tasks_tree.get_children():
@@ -952,7 +1025,7 @@ class DailyNotesApp:
             return (not task.get("star", False), task.get("due_date", ""), task.get("created_at", ""))
 
         today = datetime.date.today()
-        for task in sorted(self.tasks, key=sort_key):
+        for index, task in enumerate(sorted(self.tasks, key=sort_key), start=1):
             due_date = task.get("due_date", "")
             star_display = "★" if task.get("star") else ""
             tags = []
@@ -966,9 +1039,59 @@ class DailyNotesApp:
                 "",
                 tk.END,
                 iid=task["id"],
-                values=(f"{task.get('title', '')} ({due_date})", star_display),
+                values=(index, task.get("title", ""), due_date, star_display),
                 tags=tags
             )
+
+    def render_archives(self):
+        for item in self.archives_tree.get_children():
+            self.archives_tree.delete(item)
+
+        for index, task in enumerate(self.archived_tasks, start=1):
+            due_date = task.get("due_date", "")
+            star_display = "★" if task.get("star") else ""
+            completed_at = task.get("completed_at", "")
+            completed_display = completed_at.split("T")[0] if completed_at else ""
+            self.archives_tree.insert(
+                "",
+                tk.END,
+                iid=task["id"],
+                values=(index, task.get("title", ""), due_date, star_display, completed_display)
+            )
+
+    def edit_task_due_date(self, event):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        task = next((task for task in self.tasks if task["id"] == task_id), None)
+        if not task:
+            return
+
+        picker = tk.Toplevel(self.root)
+        picker.title("Select Due Date")
+        picker.transient(self.root)
+        picker.grab_set()
+
+        cal = Calendar(picker, selectmode='day', date_pattern='yyyy-mm-dd')
+        cal.pack(padx=10, pady=10)
+
+        def set_date():
+            selected_date = cal.get_date()
+            try:
+                due_date = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
+            except ValueError:
+                messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
+                return
+            if due_date < datetime.date.today():
+                messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+                return
+            task["due_date"] = selected_date
+            self.save_tasks()
+            self.render_tasks()
+            picker.destroy()
+
+        self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
 
     def insert_image_with_size(self, image_path, size):
         try:
