@@ -127,6 +127,35 @@ class DailyNotesApp:
         self.root.title("Daily Notes - Multi-Page Improved")
         self.root.geometry("1100x650") 
 
+        self.ui_colors = {
+            "bg": "#f5f7fb",
+            "panel": "#ffffff",
+            "border": "#d7dce5",
+            "accent": "#3b82f6",
+            "text": "#1f2937",
+            "muted": "#6b7280"
+        }
+        self.root.configure(bg=self.ui_colors["bg"])
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TNotebook", background=self.ui_colors["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            padding=(12, 6),
+            font=("Segoe UI", 10, "bold"),
+            background=self.ui_colors["panel"],
+            foreground=self.ui_colors["text"]
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", self.ui_colors["panel"])],
+            foreground=[("selected", self.ui_colors["accent"])]
+        )
+
         self.current_date = datetime.date.today()
         self.current_page_title = "Page 1" 
         self.page_titles = {} 
@@ -151,13 +180,13 @@ class DailyNotesApp:
         self.notebook.pack(fill=tk.BOTH, expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self.handle_tab_change)
 
-        main_tab = tk.Frame(self.notebook)
-        general_tab = tk.Frame(self.notebook)
+        main_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
+        general_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
         self.notebook.add(main_tab, text="Daily Notes")
         self.notebook.add(general_tab, text="General Notes")
 
         # Left frame: Calendar + Page Selector
-        left_frame = tk.Frame(main_tab, padx=10, pady=10)
+        left_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
         left_frame.pack(side=tk.LEFT, fill=tk.Y)
 
         # 1. Calendar
@@ -165,13 +194,23 @@ class DailyNotesApp:
         self.calendar.pack(pady=10)
         self.calendar.bind("<<CalendarSelected>>", self.load_selected_date)
 
-        tk.Label(left_frame, text="Pages:").pack(pady=(10, 0))
+        tk.Label(left_frame, text="Pages:", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).pack(pady=(10, 0))
 
         # 2. Page Selector Listbox
-        page_frame = tk.Frame(left_frame)
+        page_frame = tk.Frame(left_frame, bg=self.ui_colors["bg"])
         page_frame.pack(fill=tk.Y, expand=False, pady=5)
         
-        self.page_listbox = tk.Listbox(page_frame, height=10, width=25)
+        self.page_listbox = tk.Listbox(
+            page_frame,
+            height=10,
+            width=25,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            selectbackground=self.ui_colors["accent"],
+            selectforeground="white",
+            highlightthickness=1,
+            relief=tk.FLAT
+        )
         self.page_listbox.pack(side=tk.LEFT, fill=tk.Y)
         self.page_listbox.bind("<<ListboxSelect>>", self.switch_page)
 
@@ -180,49 +219,67 @@ class DailyNotesApp:
         self.page_listbox.config(yscrollcommand=page_scrollbar.set)
 
         # 3. Page Management Buttons
-        page_btn_frame = tk.Frame(left_frame)
+        page_btn_frame = tk.Frame(left_frame, bg=self.ui_colors["bg"])
         page_btn_frame.pack(fill=tk.X, pady=5)
-        tk.Button(page_btn_frame, text="Add Page", command=self.add_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(page_btn_frame, text="Del Page", command=self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.create_toolbar_button(page_btn_frame, "Add Page", self.add_page).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        self.create_toolbar_button(page_btn_frame, "Del Page", self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # Right frame: Notes area
-        right_frame = tk.Frame(main_tab, padx=10, pady=10)
+        right_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
         # Header
-        header_frame = tk.Frame(right_frame)
+        header_frame = tk.Frame(right_frame, bg=self.ui_colors["bg"])
         header_frame.pack(fill=tk.X, pady=(0, 5))
-        header_label = tk.Label(header_frame, textvariable=self.header_var, anchor="w", font=("Arial", 11, "bold"))
+        header_label = tk.Label(
+            header_frame,
+            textvariable=self.header_var,
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
         header_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Toolbar
-        toolbar = tk.Frame(right_frame)
+        toolbar = tk.Frame(right_frame, bg=self.ui_colors["bg"])
         toolbar.pack(fill=tk.X, pady=(0, 5))
 
         # Formatting Buttons
-        tk.Button(toolbar, text="Bold", command=self.toggle_bold).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Italic", command=self.toggle_italic).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Underline", command=self.toggle_underline).pack(side=tk.LEFT, padx=2) 
-        tk.Button(toolbar, text="Color", command=self.change_color).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Size +", command=lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Size -", command=lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Bold", self.toggle_bold).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Italic", self.toggle_italic).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Underline", self.toggle_underline).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Color", self.change_color).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Size +", lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Size -", lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
         
         # Alignment Buttons
-        tk.Button(toolbar, text="Left", command=lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Center", command=lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Right", command=lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Left", lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Center", lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Right", lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
 
         # NEW Table/Image Buttons
-        tk.Button(toolbar, text="Add Table", command=self.add_table_attachment).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Add Image", command=self.add_image_attachment).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Save Now", command=lambda: self.save_notes(None)).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Clear Attachments", command=self.clear_all_attachments).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Add Table", self.add_table_attachment).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Add Image", self.add_image_attachment).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Save Now", lambda: self.save_notes(None)).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Clear Attachments", self.clear_all_attachments).pack(side=tk.LEFT, padx=2)
 
 
         # Text Area with Scrollbar
-        text_frame = tk.Frame(right_frame)
+        text_frame = tk.Frame(right_frame, bg=self.ui_colors["bg"])
         text_frame.pack(fill=tk.BOTH, expand=True)
-        self.text = tk.Text(text_frame, wrap=tk.WORD, font=("Arial", 12), undo=True)
+        self.text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=("Segoe UI", 11),
+            undo=True,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            insertbackground=self.ui_colors["text"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.ui_colors["border"]
+        )
         scrollbar = tk.Scrollbar(text_frame, command=self.text.yview)
         self.text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -233,32 +290,50 @@ class DailyNotesApp:
         self.text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
 
         # Status bar
-        status_frame = tk.Frame(self.root, relief=tk.SUNKEN, bd=1)
+        status_frame = tk.Frame(self.root, relief=tk.FLAT, bd=0, bg=self.ui_colors["panel"])
         status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor="w")
-        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=2)
-        stats_label = tk.Label(status_frame, textvariable=self.stats_var, anchor="e")
-        stats_label.pack(side=tk.RIGHT, padx=6, pady=2)
+        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor="w", bg=self.ui_colors["panel"], fg=self.ui_colors["muted"])
+        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=6)
+        stats_label = tk.Label(status_frame, textvariable=self.stats_var, anchor="e", bg=self.ui_colors["panel"], fg=self.ui_colors["muted"])
+        stats_label.pack(side=tk.RIGHT, padx=6, pady=6)
 
         # General notes UI
-        general_header = tk.Label(general_tab, text="General Notes", anchor="w", font=("Arial", 11, "bold"))
+        general_header = tk.Label(
+            general_tab,
+            text="General Notes",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
         general_header.pack(fill=tk.X, padx=10, pady=(10, 5))
 
-        general_toolbar = tk.Frame(general_tab)
+        general_toolbar = tk.Frame(general_tab, bg=self.ui_colors["bg"])
         general_toolbar.pack(fill=tk.X, padx=10, pady=(0, 5))
-        tk.Button(general_toolbar, text="Bold", command=self.toggle_bold).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Italic", command=self.toggle_italic).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Underline", command=self.toggle_underline).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Color", command=self.change_color).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Size +", command=lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Size -", command=lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Left", command=lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(general_toolbar, text="Center", command=lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
-        tk.Button(general_toolbar, text="Right", command=lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Bold", self.toggle_bold).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Italic", self.toggle_italic).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Underline", self.toggle_underline).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Color", self.change_color).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Size +", lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Size -", lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Left", lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(general_toolbar, "Center", lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Right", lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
 
-        general_text_frame = tk.Frame(general_tab, padx=10, pady=10)
+        general_text_frame = tk.Frame(general_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
         general_text_frame.pack(fill=tk.BOTH, expand=True)
-        self.general_text = tk.Text(general_text_frame, wrap=tk.WORD, font=("Arial", 12), undo=True)
+        self.general_text = tk.Text(
+            general_text_frame,
+            wrap=tk.WORD,
+            font=("Segoe UI", 11),
+            undo=True,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            insertbackground=self.ui_colors["text"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.ui_colors["border"]
+        )
         general_scrollbar = tk.Scrollbar(general_text_frame, command=self.general_text.yview)
         self.general_text.configure(yscrollcommand=general_scrollbar.set)
         general_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -281,7 +356,7 @@ class DailyNotesApp:
         self.text.bind("<Control-v>", self.paste_from_clipboard)
 
         # --- FONT & TAG CONFIGURATION ---
-        self.default_font = ("Arial", 12)
+        self.default_font = ("Segoe UI", 11)
         self.configure_text_tags(self.text)
         self.configure_text_tags(self.general_text)
 
@@ -843,6 +918,21 @@ class DailyNotesApp:
 
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
+    def create_toolbar_button(self, parent, text, command):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            activebackground=self.ui_colors["accent"],
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=4
+        )
+
     def configure_text_tags(self, text_widget):
         text_widget.tag_configure("bold", font=(self.default_font[0], self.default_font[1], "bold"))
         text_widget.tag_configure("italic", font=(self.default_font[0], self.default_font[1], "italic"))
