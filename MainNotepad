@@ -371,6 +371,8 @@ class DailyNotesApp:
         tk.Label(task_form, text="Due Date (YYYY-MM-DD)", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=1, sticky="w")
         self.task_due_entry = tk.Entry(task_form, width=16)
         self.task_due_entry.grid(row=1, column=1, sticky="w", padx=(0, 10))
+        self.task_due_entry.configure(state="readonly")
+        self.task_due_entry.bind("<Button-1>", self.open_task_date_picker)
         self.create_toolbar_button(task_form, "Add Task", self.add_task).grid(row=1, column=2, sticky="w", padx=(10, 0))
 
         task_tabs = ttk.Notebook(tasks_tab)
@@ -895,11 +897,14 @@ class DailyNotesApp:
         cal.pack(padx=10, pady=10)
 
         def set_date():
+            self.task_due_entry.configure(state="normal")
             self.task_due_entry.delete(0, tk.END)
             self.task_due_entry.insert(0, cal.get_date())
+            self.task_due_entry.configure(state="readonly")
             picker.destroy()
 
         self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
+        return "break"
 
     def add_task(self):
         title = self.task_title_entry.get().strip()
