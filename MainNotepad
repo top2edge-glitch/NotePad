@@ -13,6 +13,7 @@ import base64
 NOTES_BASE_DIR = "notes"
 PAGES_LIST_FILE = "pages_list.json"
 ATTACHMENTS_DIR_NAME = "attachments"
+TASKS_FILE = "tasks.json"
 
 # Ensure main notes directory exists
 if not os.path.exists(NOTES_BASE_DIR):
@@ -159,6 +160,7 @@ class DailyNotesApp:
         self.current_date = datetime.date.today()
         self.current_page_title = "Page 1" 
         self.page_titles = {} 
+        self.tasks = []
 
         self.images = []
         self.image_references = {}
@@ -182,8 +184,10 @@ class DailyNotesApp:
 
         main_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
         general_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
+        tasks_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
         self.notebook.add(main_tab, text="Daily Notes")
         self.notebook.add(general_tab, text="General Notes")
+        self.notebook.add(tasks_tab, text="Tasks")
 
         # Left frame: Calendar + Page Selector
         left_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
@@ -345,6 +349,60 @@ class DailyNotesApp:
         self.general_text.bind("<Control-i>", self.toggle_italic)
         self.general_text.bind("<Control-u>", self.toggle_underline)
 
+        # Tasks UI
+        tasks_header = tk.Label(
+            tasks_tab,
+            text="Tasks",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
+        tasks_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        task_form = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_form.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        tk.Label(task_form, text="Task", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=0, sticky="w")
+        self.task_title_entry = tk.Entry(task_form, width=40)
+        self.task_title_entry.grid(row=1, column=0, sticky="w", padx=(0, 10))
+
+        tk.Label(task_form, text="Due Date (YYYY-MM-DD)", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=1, sticky="w")
+        self.task_due_entry = tk.Entry(task_form, width=16)
+        self.task_due_entry.grid(row=1, column=1, sticky="w", padx=(0, 10))
+        self.create_toolbar_button(task_form, "Pick Date", self.open_task_date_picker).grid(row=1, column=2, sticky="w")
+
+        self.task_star_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            task_form,
+            text="Star",
+            variable=self.task_star_var,
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"],
+            activebackground=self.ui_colors["bg"]
+        ).grid(row=1, column=3, sticky="w", padx=(10, 0))
+
+        self.create_toolbar_button(task_form, "Add Task", self.add_task).grid(row=1, column=4, sticky="w", padx=(10, 0))
+
+        task_list_frame = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.tasks_tree = ttk.Treeview(task_list_frame, columns=("task", "star"), show="headings")
+        self.tasks_tree.heading("task", text="Task")
+        self.tasks_tree.heading("star", text="Star")
+        self.tasks_tree.column("task", width=360, anchor="w")
+        self.tasks_tree.column("star", width=60, anchor="center")
+        self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tasks_tree.tag_configure("overdue", foreground="red")
+
+        tasks_scroll = tk.Scrollbar(task_list_frame, command=self.tasks_tree.yview)
+        tasks_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tasks_tree.configure(yscrollcommand=tasks_scroll.set)
+
+        task_actions = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.create_toolbar_button(task_actions, "Toggle Star", self.toggle_task_star).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(task_actions, "Delete Task", self.delete_task).pack(side=tk.LEFT, padx=2)
+
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
         self.text.bind("<Control-y>", self.perform_redo)
@@ -362,6 +420,7 @@ class DailyNotesApp:
 
         self.load_date_and_pages(self.current_date)
         self.load_general_notes()
+        self.load_tasks()
         self.update_header()
         self.update_status_metrics()
         self.schedule_date_refresh()
@@ -389,6 +448,9 @@ class DailyNotesApp:
 
     def get_general_notes_file(self):
         return os.path.join(NOTES_BASE_DIR, "general_notes.json")
+
+    def get_tasks_file(self):
+        return os.path.join(NOTES_BASE_DIR, TASKS_FILE)
     # [ID: FILE_MANAGEMENT_END_003]
 
     # [ID: PAGE_MANAGEMENT_START_004]
@@ -779,6 +841,9 @@ class DailyNotesApp:
         return self.text
 
     def update_header(self):
+        if self.notebook.select() == str(self.notebook.tabs()[2]):
+            self.header_var.set("Tasks")
+            return
         if self.notebook.select() == str(self.notebook.tabs()[1]):
             self.header_var.set("General Notes")
             return
@@ -792,6 +857,118 @@ class DailyNotesApp:
         chars = len(content)
         line, col = active_text.index(tk.INSERT).split(".")
         self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
+
+    def open_task_date_picker(self):
+        picker = tk.Toplevel(self.root)
+        picker.title("Select Due Date")
+        picker.transient(self.root)
+        picker.grab_set()
+
+        cal = Calendar(picker, selectmode='day', date_pattern='yyyy-mm-dd')
+        cal.pack(padx=10, pady=10)
+
+        def set_date():
+            self.task_due_entry.delete(0, tk.END)
+            self.task_due_entry.insert(0, cal.get_date())
+            picker.destroy()
+
+        self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
+
+    def add_task(self):
+        title = self.task_title_entry.get().strip()
+        due_str = self.task_due_entry.get().strip()
+        if not title or not due_str:
+            messagebox.showwarning("Missing Info", "Please provide a task title and due date.")
+            return
+
+        try:
+            due_date = datetime.datetime.strptime(due_str, "%Y-%m-%d").date()
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
+            return
+
+        if due_date < datetime.date.today():
+            messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+            return
+
+        task = {
+            "id": datetime.datetime.now().strftime("%Y%m%d%H%M%S%f"),
+            "title": title,
+            "due_date": due_str,
+            "star": bool(self.task_star_var.get()),
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        self.tasks.append(task)
+        self.task_title_entry.delete(0, tk.END)
+        self.task_due_entry.delete(0, tk.END)
+        self.task_star_var.set(False)
+        self.save_tasks()
+        self.render_tasks()
+
+    def delete_task(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        self.tasks = [task for task in self.tasks if task["id"] != task_id]
+        self.save_tasks()
+        self.render_tasks()
+
+    def toggle_task_star(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["star"] = not task.get("star", False)
+                break
+        self.save_tasks()
+        self.render_tasks()
+
+    def save_tasks(self):
+        tasks_file = self.get_tasks_file()
+        try:
+            with open(tasks_file, 'w') as f:
+                json.dump(self.tasks, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save tasks: {e}")
+
+    def load_tasks(self):
+        tasks_file = self.get_tasks_file()
+        if os.path.exists(tasks_file):
+            try:
+                with open(tasks_file, 'r') as f:
+                    self.tasks = json.load(f)
+            except Exception:
+                self.tasks = []
+        self.render_tasks()
+
+    def render_tasks(self):
+        for item in self.tasks_tree.get_children():
+            self.tasks_tree.delete(item)
+
+        def sort_key(task):
+            return (not task.get("star", False), task.get("due_date", ""), task.get("created_at", ""))
+
+        today = datetime.date.today()
+        for task in sorted(self.tasks, key=sort_key):
+            due_date = task.get("due_date", "")
+            star_display = "★" if task.get("star") else ""
+            tags = []
+            try:
+                parsed_due = datetime.datetime.strptime(due_date, "%Y-%m-%d").date()
+                if parsed_due < today:
+                    tags.append("overdue")
+            except ValueError:
+                pass
+            self.tasks_tree.insert(
+                "",
+                tk.END,
+                iid=task["id"],
+                values=(f"{task.get('title', '')} ({due_date})", star_display),
+                tags=tags
+            )
 
     def insert_image_with_size(self, image_path, size):
         try:
