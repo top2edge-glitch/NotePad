@@ -364,6 +364,7 @@ class DailyNotesApp:
         self.load_general_notes()
         self.update_header()
         self.update_status_metrics()
+        self.schedule_date_refresh()
     # [ID: INIT_END_002]
 
     # [ID: FILE_MANAGEMENT_START_003]
@@ -743,6 +744,18 @@ class DailyNotesApp:
         
         self.load_date_and_pages(selected_date)
     # [ID: CORE_LOAD_END_007]
+
+    def schedule_date_refresh(self):
+        self.refresh_date_if_needed()
+        self.root.after(60000, self.schedule_date_refresh)
+
+    def refresh_date_if_needed(self):
+        today = datetime.date.today()
+        if today != self.current_date:
+            self.save_notes(None)
+            self.load_date_and_pages(today)
+            self.calendar.selection_set(today)
+            self.calendar.see(today)
 
     def load_general_notes(self):
         notes_file = self.get_general_notes_file()
