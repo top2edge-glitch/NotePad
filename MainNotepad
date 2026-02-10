@@ -3,7 +3,7 @@ import datetime
 import json
 import shutil
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, colorchooser
+from tkinter import filedialog, messagebox, simpledialog, colorchooser, ttk
 from tkcalendar import Calendar
 from PIL import Image, ImageTk, ImageGrab
 from io import BytesIO
@@ -13,6 +13,7 @@ import base64
 NOTES_BASE_DIR = "notes"
 PAGES_LIST_FILE = "pages_list.json"
 ATTACHMENTS_DIR_NAME = "attachments"
+TASKS_FILE = "tasks.json"
 
 # Ensure main notes directory exists
 if not os.path.exists(NOTES_BASE_DIR):
@@ -127,17 +128,70 @@ class DailyNotesApp:
         self.root.title("Daily Notes - Multi-Page Improved")
         self.root.geometry("1100x650") 
 
+        self.ui_colors = {
+            "bg": "#f5f7fb",
+            "panel": "#ffffff",
+            "border": "#d7dce5",
+            "accent": "#3b82f6",
+            "text": "#1f2937",
+            "muted": "#6b7280"
+        }
+        self.root.configure(bg=self.ui_colors["bg"])
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TNotebook", background=self.ui_colors["bg"], borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            padding=(12, 6),
+            font=("Segoe UI", 10, "bold"),
+            background=self.ui_colors["panel"],
+            foreground=self.ui_colors["text"]
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", self.ui_colors["panel"])],
+            foreground=[("selected", self.ui_colors["accent"])]
+        )
+
         self.current_date = datetime.date.today()
         self.current_page_title = "Page 1" 
         self.page_titles = {} 
+        self.tasks = []
+        self.archived_tasks = []
 
         self.images = []
         self.image_references = {}
         self.table_references = {} # NEW: To hold references to embedded TableFrame objects
+        self.save_job = None
+        self.last_saved_at = None
+        self.general_save_job = None
+        self.last_general_saved_at = None
+        self.dragging_image_tag = None
+        self.image_drag_start = None
+        self.resizing_image = False
+        self.header_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(value="Ready")
+        self.stats_var = tk.StringVar(value="Words: 0 | Chars: 0 | Ln 1, Col 0")
 
         # --- UI SETUP ---
+        # Notebook for main and general notes
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.bind("<<NotebookTabChanged>>", self.handle_tab_change)
+
+        main_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
+        general_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
+        tasks_tab = tk.Frame(self.notebook, bg=self.ui_colors["bg"])
+        self.notebook.add(main_tab, text="Daily Notes")
+        self.notebook.add(general_tab, text="General Notes")
+        self.notebook.add(tasks_tab, text="Tasks")
+
         # Left frame: Calendar + Page Selector
-        left_frame = tk.Frame(self.root, padx=10, pady=10)
+        left_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
         left_frame.pack(side=tk.LEFT, fill=tk.Y)
 
         # 1. Calendar
@@ -145,13 +199,23 @@ class DailyNotesApp:
         self.calendar.pack(pady=10)
         self.calendar.bind("<<CalendarSelected>>", self.load_selected_date)
 
-        tk.Label(left_frame, text="Pages:").pack(pady=(10, 0))
+        tk.Label(left_frame, text="Pages:", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).pack(pady=(10, 0))
 
         # 2. Page Selector Listbox
-        page_frame = tk.Frame(left_frame)
+        page_frame = tk.Frame(left_frame, bg=self.ui_colors["bg"])
         page_frame.pack(fill=tk.Y, expand=False, pady=5)
         
-        self.page_listbox = tk.Listbox(page_frame, height=10, width=25)
+        self.page_listbox = tk.Listbox(
+            page_frame,
+            height=10,
+            width=25,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            selectbackground=self.ui_colors["accent"],
+            selectforeground="white",
+            highlightthickness=1,
+            relief=tk.FLAT
+        )
         self.page_listbox.pack(side=tk.LEFT, fill=tk.Y)
         self.page_listbox.bind("<<ListboxSelect>>", self.switch_page)
 
@@ -160,50 +224,211 @@ class DailyNotesApp:
         self.page_listbox.config(yscrollcommand=page_scrollbar.set)
 
         # 3. Page Management Buttons
-        page_btn_frame = tk.Frame(left_frame)
+        page_btn_frame = tk.Frame(left_frame, bg=self.ui_colors["bg"])
         page_btn_frame.pack(fill=tk.X, pady=5)
-        tk.Button(page_btn_frame, text="Add Page", command=self.add_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(page_btn_frame, text="Del Page", command=self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.create_toolbar_button(page_btn_frame, "Add Page", self.add_page).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        self.create_toolbar_button(page_btn_frame, "Del Page", self.delete_page).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 
         # Right frame: Notes area
-        right_frame = tk.Frame(self.root, padx=10, pady=10)
+        right_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
+        # Header
+        header_frame = tk.Frame(right_frame, bg=self.ui_colors["bg"])
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        header_label = tk.Label(
+            header_frame,
+            textvariable=self.header_var,
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
+        header_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Toolbar
-        toolbar = tk.Frame(right_frame)
+        toolbar = tk.Frame(right_frame, bg=self.ui_colors["bg"])
         toolbar.pack(fill=tk.X, pady=(0, 5))
 
         # Formatting Buttons
-        tk.Button(toolbar, text="Bold", command=self.toggle_bold).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Italic", command=self.toggle_italic).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Underline", command=self.toggle_underline).pack(side=tk.LEFT, padx=2) 
-        tk.Button(toolbar, text="Color", command=self.change_color).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Size +", command=lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Size -", command=lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Bold", self.toggle_bold).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Italic", self.toggle_italic).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Underline", self.toggle_underline).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Color", self.change_color).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Size +", lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Size -", lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
         
         # Alignment Buttons
-        tk.Button(toolbar, text="Left", command=lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Center", command=lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Right", command=lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Left", lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Center", lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Right", lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
 
         # NEW Table/Image Buttons
-        tk.Button(toolbar, text="Add Table", command=self.add_table_attachment).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Add Image", command=self.add_image_attachment).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="Save Now", command=lambda: self.save_notes(None)).pack(side=tk.LEFT, padx=(10, 2))
-        tk.Button(toolbar, text="Clear Attachments", command=self.clear_all_attachments).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Add Table", self.add_table_attachment).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Add Image", self.add_image_attachment).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(toolbar, "Save Now", lambda: self.save_notes(None)).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(toolbar, "Clear Attachments", self.clear_all_attachments).pack(side=tk.LEFT, padx=2)
 
 
         # Text Area with Scrollbar
-        text_frame = tk.Frame(right_frame)
+        text_frame = tk.Frame(right_frame, bg=self.ui_colors["bg"])
         text_frame.pack(fill=tk.BOTH, expand=True)
-        self.text = tk.Text(text_frame, wrap=tk.WORD, font=("Arial", 12), undo=True)
+        self.text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=("Segoe UI", 11),
+            undo=True,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            insertbackground=self.ui_colors["text"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.ui_colors["border"]
+        )
         scrollbar = tk.Scrollbar(text_frame, command=self.text.yview)
         self.text.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.text.bind("<KeyRelease>", self.auto_save)
-        
+        self.text.bind("<KeyRelease>", self.update_status_metrics, add="+")
+        self.text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
+
+        # Status bar
+        status_frame = tk.Frame(self.root, relief=tk.FLAT, bd=0, bg=self.ui_colors["panel"])
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor="w", bg=self.ui_colors["panel"], fg=self.ui_colors["muted"])
+        status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=6)
+        stats_label = tk.Label(status_frame, textvariable=self.stats_var, anchor="e", bg=self.ui_colors["panel"], fg=self.ui_colors["muted"])
+        stats_label.pack(side=tk.RIGHT, padx=6, pady=6)
+
+        # General notes UI
+        general_header = tk.Label(
+            general_tab,
+            text="General Notes",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
+        general_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        general_toolbar = tk.Frame(general_tab, bg=self.ui_colors["bg"])
+        general_toolbar.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.create_toolbar_button(general_toolbar, "Bold", self.toggle_bold).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Italic", self.toggle_italic).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Underline", self.toggle_underline).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Color", self.change_color).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Size +", lambda: self.change_font_size(2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Size -", lambda: self.change_font_size(-2)).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Left", lambda: self.align_text("left")).pack(side=tk.LEFT, padx=(10, 2))
+        self.create_toolbar_button(general_toolbar, "Center", lambda: self.align_text("center")).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(general_toolbar, "Right", lambda: self.align_text("right")).pack(side=tk.LEFT, padx=2)
+
+        general_text_frame = tk.Frame(general_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
+        general_text_frame.pack(fill=tk.BOTH, expand=True)
+        self.general_text = tk.Text(
+            general_text_frame,
+            wrap=tk.WORD,
+            font=("Segoe UI", 11),
+            undo=True,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            insertbackground=self.ui_colors["text"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.ui_colors["border"]
+        )
+        general_scrollbar = tk.Scrollbar(general_text_frame, command=self.general_text.yview)
+        self.general_text.configure(yscrollcommand=general_scrollbar.set)
+        general_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.general_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.general_text.bind("<KeyRelease>", self.auto_save_general)
+        self.general_text.bind("<KeyRelease>", self.update_status_metrics, add="+")
+        self.general_text.bind("<ButtonRelease>", self.update_status_metrics, add="+")
+        self.general_text.bind("<Control-b>", self.toggle_bold)
+        self.general_text.bind("<Control-i>", self.toggle_italic)
+        self.general_text.bind("<Control-u>", self.toggle_underline)
+
+        # Tasks UI
+        tasks_header = tk.Label(
+            tasks_tab,
+            text="Tasks",
+            anchor="w",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.ui_colors["bg"],
+            fg=self.ui_colors["text"]
+        )
+        tasks_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        task_form = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_form.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        tk.Label(task_form, text="Task", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=0, sticky="w")
+        self.task_title_entry = tk.Entry(task_form, width=40)
+        self.task_title_entry.grid(row=1, column=0, sticky="w", padx=(0, 10))
+
+        tk.Label(task_form, text="Due Date (YYYY-MM-DD)", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=1, sticky="w")
+        self.task_due_entry = tk.Entry(task_form, width=16)
+        self.task_due_entry.grid(row=1, column=1, sticky="w", padx=(0, 10))
+        self.task_due_entry.configure(state="readonly")
+        self.task_due_entry.bind("<Button-1>", self.open_task_date_picker)
+        self.create_toolbar_button(task_form, "Add Task", self.add_task).grid(row=1, column=2, sticky="w", padx=(10, 0))
+
+        task_tabs = ttk.Notebook(tasks_tab)
+        task_tabs.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.task_tabs = task_tabs
+
+        tasks_list_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
+        archives_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
+        task_tabs.add(tasks_list_tab, text="Active Tasks")
+        task_tabs.add(archives_tab, text="Archives")
+
+        task_list_frame = tk.Frame(tasks_list_tab, bg=self.ui_colors["bg"])
+        task_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.tasks_tree = ttk.Treeview(task_list_frame, columns=("select", "index", "task", "due", "star"), show="headings")
+        self.tasks_tree.heading("select", text="")
+        self.tasks_tree.heading("index", text="#")
+        self.tasks_tree.heading("task", text="Task")
+        self.tasks_tree.heading("due", text="Due Date")
+        self.tasks_tree.heading("star", text="Star")
+        self.tasks_tree.column("select", width=30, anchor="center")
+        self.tasks_tree.column("index", width=40, anchor="center")
+        self.tasks_tree.column("task", width=290, anchor="w")
+        self.tasks_tree.column("due", width=120, anchor="center")
+        self.tasks_tree.column("star", width=60, anchor="center")
+        self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tasks_tree.tag_configure("overdue", foreground="red")
+        self.tasks_tree.bind("<Button-1>", self.handle_task_click)
+
+        tasks_scroll = tk.Scrollbar(task_list_frame, command=self.tasks_tree.yview)
+        tasks_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tasks_tree.configure(yscrollcommand=tasks_scroll.set)
+
+        task_actions = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        task_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.create_toolbar_button(task_actions, "Mark Completed", self.complete_task).pack(side=tk.LEFT, padx=2)
+        self.create_toolbar_button(task_actions, "Delete Selected", self.delete_selected_tasks).pack(side=tk.LEFT, padx=2)
+
+        archive_list_frame = tk.Frame(archives_tab, bg=self.ui_colors["bg"])
+        archive_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.archives_tree = ttk.Treeview(archive_list_frame, columns=("index", "task", "due", "star", "done"), show="headings")
+        self.archives_tree.heading("index", text="#")
+        self.archives_tree.heading("task", text="Task")
+        self.archives_tree.heading("due", text="Due Date")
+        self.archives_tree.heading("star", text="Star")
+        self.archives_tree.heading("done", text="Completed")
+        self.archives_tree.column("index", width=40, anchor="center")
+        self.archives_tree.column("task", width=280, anchor="w")
+        self.archives_tree.column("due", width=120, anchor="center")
+        self.archives_tree.column("star", width=60, anchor="center")
+        self.archives_tree.column("done", width=120, anchor="center")
+        self.archives_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        archives_scroll = tk.Scrollbar(archive_list_frame, command=self.archives_tree.yview)
+        archives_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.archives_tree.configure(yscrollcommand=archives_scroll.set)
+
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
         self.text.bind("<Control-y>", self.perform_redo)
@@ -215,16 +440,16 @@ class DailyNotesApp:
         self.text.bind("<Control-v>", self.paste_from_clipboard)
 
         # --- FONT & TAG CONFIGURATION ---
-        self.default_font = ("Arial", 12)
-        self.text.tag_configure("bold", font=(self.default_font[0], self.default_font[1], "bold"))
-        self.text.tag_configure("italic", font=(self.default_font[0], self.default_font[1], "italic"))
-        self.text.tag_configure("underline", font=(self.default_font[0], self.default_font[1], "underline"))
-        
-        self.text.tag_configure("align_left", justify=tk.LEFT)
-        self.text.tag_configure("align_center", justify=tk.CENTER)
-        self.text.tag_configure("align_right", justify=tk.RIGHT)
+        self.default_font = ("Segoe UI", 11)
+        self.configure_text_tags(self.text)
+        self.configure_text_tags(self.general_text)
 
         self.load_date_and_pages(self.current_date)
+        self.load_general_notes()
+        self.load_tasks()
+        self.update_header()
+        self.update_status_metrics()
+        self.schedule_date_refresh()
     # [ID: INIT_END_002]
 
     # [ID: FILE_MANAGEMENT_START_003]
@@ -246,6 +471,15 @@ class DailyNotesApp:
         folder = os.path.join(self.get_date_folder(date), ATTACHMENTS_DIR_NAME)
         os.makedirs(folder, exist_ok=True)
         return folder
+
+    def get_general_notes_file(self):
+        return os.path.join(NOTES_BASE_DIR, "general_notes.json")
+
+    def get_tasks_file(self):
+        return os.path.join(NOTES_BASE_DIR, TASKS_FILE)
+
+    def get_archives_file(self):
+        return os.path.join(NOTES_BASE_DIR, "tasks_archives.json")
     # [ID: FILE_MANAGEMENT_END_003]
 
     # [ID: PAGE_MANAGEMENT_START_004]
@@ -408,6 +642,7 @@ class DailyNotesApp:
     # [ID: CORE_SAVE_START_006]
     def save_notes(self, event):
         """Saves the current page's content using the text.dump() method."""
+        self.save_job = None
         date = self.current_date
         notes_file = self.get_page_content_file(date, self.current_page_title)
 
@@ -456,7 +691,12 @@ class DailyNotesApp:
                     current_text = ""
                 
                 image_tag = item[1]
-                content.append({"type": "image", "tag": image_tag})
+                image_data = self.image_references.get(image_tag, {})
+                content.append({
+                    "type": "image",
+                    "tag": image_tag,
+                    "size": image_data.get("size")
+                })
                 current_tags = []
             
             elif data_type == 'window': 
@@ -483,14 +723,42 @@ class DailyNotesApp:
         try:
             with open(notes_file, 'w') as f:
                 json.dump(data, f, indent=4)
+            self.last_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved at {self.last_saved_at.strftime('%H:%M:%S')}")
+            self.update_status_metrics()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save notes: {e}")
     # [ID: CORE_SAVE_END_006]
 
+    def save_general_notes(self, event):
+        self.general_save_job = None
+        notes_file = self.get_general_notes_file()
+        data = {
+            "updated_at": datetime.datetime.now().isoformat(),
+            "content": self.general_text.get("1.0", "end-1c")
+        }
+        try:
+            with open(notes_file, 'w') as f:
+                json.dump(data, f, indent=4)
+            self.last_general_saved_at = datetime.datetime.now()
+            self.status_var.set(f"Saved general notes at {self.last_general_saved_at.strftime('%H:%M:%S')}")
+            self.update_status_metrics()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save general notes: {e}")
+
     # [ID: CORE_LOAD_START_007]
     def auto_save(self, event):
-        """Triggers save on key release."""
-        self.save_notes(event)
+        """Schedules a save after a short debounce window."""
+        if self.save_job is not None:
+            self.root.after_cancel(self.save_job)
+        self.status_var.set("Saving...")
+        self.save_job = self.root.after(500, lambda: self.save_notes(event))
+
+    def auto_save_general(self, event):
+        if self.general_save_job is not None:
+            self.root.after_cancel(self.general_save_job)
+        self.status_var.set("Saving general notes...")
+        self.general_save_job = self.root.after(500, lambda: self.save_general_notes(event))
 
     def load_notes_for_page(self):
         """Clears current text and loads the saved notes for the current page."""
@@ -537,7 +805,7 @@ class DailyNotesApp:
                         self.text.insert(tk.END, text_to_insert, font_tags)
                         
                     elif item["type"] == "image":
-                        self.load_image_from_file(item["tag"])
+                        self.load_image_from_file(item["tag"], item.get("size"))
 
                     elif item["type"] == "table":
                         self.load_table_from_data(item["data"])
@@ -549,6 +817,8 @@ class DailyNotesApp:
             self.text.insert(tk.END, f"Start writing for '{self.current_page_title}' here...")
         
         self.text.config(font=self.default_font)
+        self.update_header()
+        self.update_status_metrics()
 
     def load_date_and_pages(self, date):
         """Loads pages for a date, then loads the content for the first page."""
@@ -566,21 +836,476 @@ class DailyNotesApp:
         self.load_date_and_pages(selected_date)
     # [ID: CORE_LOAD_END_007]
 
+    def schedule_date_refresh(self):
+        self.refresh_date_if_needed()
+        self.root.after(60000, self.schedule_date_refresh)
+
+    def refresh_date_if_needed(self):
+        today = datetime.date.today()
+        if today != self.current_date:
+            self.save_notes(None)
+            self.load_date_and_pages(today)
+            self.calendar.selection_set(today)
+            self.calendar.see(today)
+
+    def load_general_notes(self):
+        notes_file = self.get_general_notes_file()
+        if os.path.exists(notes_file):
+            try:
+                with open(notes_file, 'r') as f:
+                    data = json.load(f)
+                self.general_text.delete("1.0", tk.END)
+                self.general_text.insert(tk.END, data.get("content", ""))
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load general notes: {e}")
+
+    def handle_tab_change(self, event):
+        self.update_header()
+        self.update_status_metrics()
+
+    def get_active_text_widget(self):
+        current_tab = self.notebook.select()
+        if current_tab == str(self.notebook.tabs()[1]):
+            return self.general_text
+        return self.text
+
+    def update_header(self):
+        if self.notebook.select() == str(self.notebook.tabs()[2]):
+            self.header_var.set("Tasks")
+            return
+        if self.notebook.select() == str(self.notebook.tabs()[1]):
+            self.header_var.set("General Notes")
+            return
+        date_str = self.current_date.strftime("%B %d, %Y")
+        self.header_var.set(f"{date_str} • {self.current_page_title}")
+
+    def update_status_metrics(self, event=None):
+        active_text = self.get_active_text_widget()
+        content = active_text.get("1.0", "end-1c")
+        words = len([word for word in content.split() if word.strip()])
+        chars = len(content)
+        line, col = active_text.index(tk.INSERT).split(".")
+        self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
+
+    def open_task_date_picker(self):
+        picker = tk.Toplevel(self.root)
+        picker.title("Select Due Date")
+        picker.transient(self.root)
+        picker.grab_set()
+
+        cal = Calendar(picker, selectmode='day', date_pattern='yyyy-mm-dd')
+        cal.pack(padx=10, pady=10)
+
+        def set_date():
+            self.task_due_entry.configure(state="normal")
+            self.task_due_entry.delete(0, tk.END)
+            self.task_due_entry.insert(0, cal.get_date())
+            self.task_due_entry.configure(state="readonly")
+            picker.destroy()
+
+        self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
+        return "break"
+
+    def add_task(self):
+        title = self.task_title_entry.get().strip()
+        due_str = self.task_due_entry.get().strip()
+        if not title or not due_str:
+            messagebox.showwarning("Missing Info", "Please provide a task title and due date.")
+            return
+
+        try:
+            due_date = datetime.datetime.strptime(due_str, "%Y-%m-%d").date()
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
+            return
+
+        if due_date < datetime.date.today():
+            messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+            return
+
+        task = {
+            "id": datetime.datetime.now().strftime("%Y%m%d%H%M%S%f"),
+            "title": title,
+            "due_date": due_str,
+            "star": False,
+            "selected": False,
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        self.tasks.append(task)
+        self.task_title_entry.delete(0, tk.END)
+        self.task_due_entry.delete(0, tk.END)
+        self.save_tasks()
+        self.render_tasks()
+
+    def delete_task(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        self.tasks = [task for task in self.tasks if task["id"] != task_id]
+        self.save_tasks()
+        self.render_tasks()
+
+    def delete_selected_tasks(self):
+        remaining = []
+        for task in self.tasks:
+            if task.get("selected"):
+                continue
+            remaining.append(task)
+        if len(remaining) == len(self.tasks):
+            return
+        self.tasks = remaining
+        self.save_tasks()
+        self.render_tasks()
+
+    def toggle_task_star(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["star"] = not task.get("star", False)
+                break
+        self.save_tasks()
+        self.render_tasks()
+
+    def complete_task(self):
+        selected = self.tasks_tree.selection()
+        if not selected:
+            return
+        task_id = selected[0]
+        task = next((task for task in self.tasks if task["id"] == task_id), None)
+        if not task:
+            return
+        task["completed_at"] = datetime.datetime.now().isoformat()
+        self.tasks = [item for item in self.tasks if item["id"] != task_id]
+        self.archived_tasks.append(task)
+        self.save_tasks()
+        self.save_archives()
+        self.render_tasks()
+        self.render_archives()
+
+    def save_tasks(self):
+        tasks_file = self.get_tasks_file()
+        try:
+            with open(tasks_file, 'w') as f:
+                json.dump(self.tasks, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save tasks: {e}")
+
+    def load_tasks(self):
+        tasks_file = self.get_tasks_file()
+        if os.path.exists(tasks_file):
+            try:
+                with open(tasks_file, 'r') as f:
+                    self.tasks = json.load(f)
+            except Exception:
+                self.tasks = []
+        self.render_tasks()
+        self.load_archives()
+
+    def save_archives(self):
+        archives_file = self.get_archives_file()
+        try:
+            with open(archives_file, 'w') as f:
+                json.dump(self.archived_tasks, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save archives: {e}")
+
+    def load_archives(self):
+        archives_file = self.get_archives_file()
+        if os.path.exists(archives_file):
+            try:
+                with open(archives_file, 'r') as f:
+                    self.archived_tasks = json.load(f)
+            except Exception:
+                self.archived_tasks = []
+        self.render_archives()
+
+    def render_tasks(self):
+        for item in self.tasks_tree.get_children():
+            self.tasks_tree.delete(item)
+
+        def sort_key(task):
+            return (not task.get("star", False), task.get("due_date", ""), task.get("created_at", ""))
+
+        today = datetime.date.today()
+        for index, task in enumerate(sorted(self.tasks, key=sort_key), start=1):
+            due_date = task.get("due_date", "")
+            star_display = "★" if task.get("star") else ""
+            selected_display = "☑" if task.get("selected") else "☐"
+            tags = []
+            try:
+                parsed_due = datetime.datetime.strptime(due_date, "%Y-%m-%d").date()
+                if parsed_due < today:
+                    tags.append("overdue")
+            except ValueError:
+                pass
+            self.tasks_tree.insert(
+                "",
+                tk.END,
+                iid=task["id"],
+                values=(selected_display, index, task.get("title", ""), due_date, star_display),
+                tags=tags
+            )
+
+    def render_archives(self):
+        for item in self.archives_tree.get_children():
+            self.archives_tree.delete(item)
+
+        for index, task in enumerate(self.archived_tasks, start=1):
+            due_date = task.get("due_date", "")
+            star_display = "★" if task.get("star") else ""
+            completed_at = task.get("completed_at", "")
+            completed_display = completed_at.split("T")[0] if completed_at else ""
+            self.archives_tree.insert(
+                "",
+                tk.END,
+                iid=task["id"],
+                values=(index, task.get("title", ""), due_date, star_display, completed_display)
+            )
+
+    def edit_task_due_date(self, task_id):
+        task = next((task for task in self.tasks if task["id"] == task_id), None)
+        if not task:
+            return
+
+        picker = tk.Toplevel(self.root)
+        picker.title("Select Due Date")
+        picker.transient(self.root)
+        picker.grab_set()
+
+        cal = Calendar(picker, selectmode='day', date_pattern='yyyy-mm-dd')
+        cal.pack(padx=10, pady=10)
+
+        def set_date():
+            selected_date = cal.get_date()
+            try:
+                due_date = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
+            except ValueError:
+                messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
+                return
+            if due_date < datetime.date.today():
+                messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+                return
+            task["due_date"] = selected_date
+            self.save_tasks()
+            self.render_tasks()
+            picker.destroy()
+
+        self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
+
+    def handle_task_click(self, event):
+        region = self.tasks_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        column = self.tasks_tree.identify_column(event.x)
+        row_id = self.tasks_tree.identify_row(event.y)
+        if not row_id:
+            return
+        if column == "#4":
+            self.edit_task_due_date(row_id)
+            return "break"
+        if column == "#1":
+            for task in self.tasks:
+                if task["id"] == row_id:
+                    task["selected"] = not task.get("selected", False)
+                    break
+            self.save_tasks()
+            self.render_tasks()
+            return "break"
+        if column == "#5":
+            for task in self.tasks:
+                if task["id"] == row_id:
+                    task["star"] = not task.get("star", False)
+                    break
+            self.save_tasks()
+            self.render_tasks()
+            return "break"
+
+    def insert_image_with_size(self, image_path, size):
+        try:
+            img = Image.open(image_path)
+            width, height = size
+            img = img.resize((width, height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_tag = os.path.basename(image_path)
+
+            image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (width, height),
+                "path": image_path
+            }
+
+            self.text.window_create(tk.INSERT, window=image_label)
+            self.text.insert(tk.END, "\n")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load/insert image: {e}")
+
+    def handle_image_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        image_data = self.image_references[image_tag]
+        current_width, current_height = image_data["size"]
+        scale = 1.1 if event.delta > 0 else 0.9
+        new_width = max(100, min(800, int(current_width * scale)))
+        new_height = max(100, min(800, int(current_height * scale)))
+        image_path = image_data["path"]
+
+        try:
+            img = Image.open(image_path)
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (new_width, new_height)
+            image_data["label"].configure(image=photo)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
+
+    def find_window_index(self, widget_path):
+        for item in self.text.dump('1.0', tk.END + '-1c', window=True):
+            data_type = item[0]
+            if data_type == 'window' and item[1] == widget_path:
+                return item[2]
+        return None
+
+    def start_image_drag(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if image_tag:
+            self.dragging_image_tag = image_tag
+            self.image_drag_start = (event.x_root, event.y_root)
+
+    def track_image_drag(self, event):
+        if self.dragging_image_tag:
+            self.image_drag_last = (event.x_root, event.y_root)
+
+    def end_image_drag(self, event):
+        image_tag = getattr(self, "dragging_image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+
+        if self.resizing_image:
+            self.dragging_image_tag = None
+            self.image_drag_start = None
+            self.resizing_image = False
+            return
+
+        start = self.image_drag_start
+        end = (event.x_root, event.y_root)
+        if not start or (abs(end[0] - start[0]) < 8 and abs(end[1] - start[1]) < 8):
+            self.dragging_image_tag = None
+            self.image_drag_start = None
+            return
+
+        image_data = self.image_references[image_tag]
+        widget_path = image_data["label"]._w
+        current_index = self.find_window_index(widget_path)
+        x = event.x_root - self.text.winfo_rootx()
+        y = event.y_root - self.text.winfo_rooty()
+        try:
+            target_index = self.text.index(f"@{x},{y}")
+        except tk.TclError:
+            target_index = None
+
+        if current_index and target_index and target_index != current_index:
+            self.text.delete(current_index)
+            self.text.window_create(target_index, window=image_data["label"])
+            self.text.insert(target_index, "\n")
+
+        self.dragging_image_tag = None
+        self.image_drag_start = None
+        if target_index and target_index != current_index:
+            self.auto_save(None)
+
+    def handle_image_drag_resize(self, event):
+        image_tag = getattr(event.widget, "image_tag", None)
+        if not image_tag or image_tag not in self.image_references:
+            return
+        self.resizing_image = True
+
+        image_data = self.image_references[image_tag]
+        start = self.image_drag_start
+        if not start:
+            return
+
+        dx = event.x_root - start[0]
+        dy = event.y_root - start[1]
+        current_width, current_height = image_data["size"]
+        new_width = max(100, min(800, current_width + dx))
+        new_height = max(100, min(800, current_height + dy))
+
+        image_path = image_data["path"]
+        try:
+            img = Image.open(image_path)
+            img = img.resize((int(new_width), int(new_height)), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_data["photo"] = photo
+            image_data["size"] = (int(new_width), int(new_height))
+            image_data["label"].configure(image=photo)
+            self.image_drag_start = (event.x_root, event.y_root)
+            self.auto_save(None)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not resize image: {e}")
+
     # [ID: FORMATTING_START_008]
     # --- (Rich text formatting methods) ---
+    def create_toolbar_button(self, parent, text, command):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=self.ui_colors["panel"],
+            fg=self.ui_colors["text"],
+            activebackground=self.ui_colors["accent"],
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=4
+        )
+
+    def configure_text_tags(self, text_widget):
+        text_widget.tag_configure("bold", font=(self.default_font[0], self.default_font[1], "bold"))
+        text_widget.tag_configure("italic", font=(self.default_font[0], self.default_font[1], "italic"))
+        text_widget.tag_configure("underline", font=(self.default_font[0], self.default_font[1], "underline"))
+
+        text_widget.tag_configure("align_left", justify=tk.LEFT)
+        text_widget.tag_configure("align_center", justify=tk.CENTER)
+        text_widget.tag_configure("align_right", justify=tk.RIGHT)
+
+    def auto_save_active(self):
+        if self.get_active_text_widget() is self.general_text:
+            self.auto_save_general(None)
+        else:
+            self.auto_save(None)
+
     def toggle_tag(self, tag_name):
         try:
-            selection = self.text.tag_ranges(tk.SEL)
+            active_text = self.get_active_text_widget()
+            selection = active_text.tag_ranges(tk.SEL)
             if not selection:
                 return
             start, end = selection
             
-            if tag_name in self.text.tag_names(start):
-                self.text.tag_remove(tag_name, start, end)
+            if tag_name in active_text.tag_names(start):
+                active_text.tag_remove(tag_name, start, end)
             else:
-                self.text.tag_add(tag_name, start, end)
+                active_text.tag_add(tag_name, start, end)
                 
-            self.auto_save(None)
+            self.auto_save_active()
             
         except tk.TclError:
             pass
@@ -602,19 +1327,20 @@ class DailyNotesApp:
         all_alignment_tags = ["align_left", "align_center", "align_right"]
 
         try:
-            selection = self.text.tag_ranges(tk.SEL)
+            active_text = self.get_active_text_widget()
+            selection = active_text.tag_ranges(tk.SEL)
             if selection:
                 start, end = selection
             else:
-                start = self.text.index("insert linestart")
-                end = self.text.index("insert lineend + 1c")
+                start = active_text.index("insert linestart")
+                end = active_text.index("insert lineend + 1c")
                 
             for tag in all_alignment_tags:
-                self.text.tag_remove(tag, start, end)
+                active_text.tag_remove(tag, start, end)
                 
-            self.text.tag_add(tag_to_apply, start, end)
+            active_text.tag_add(tag_to_apply, start, end)
             
-            self.auto_save(None)
+            self.auto_save_active()
 
         except tk.TclError:
             pass
@@ -623,41 +1349,43 @@ class DailyNotesApp:
         color_code = colorchooser.askcolor(title="Choose Text Color")[1]
         if color_code:
             try:
-                selection = self.text.tag_ranges(tk.SEL)
+                active_text = self.get_active_text_widget()
+                selection = active_text.tag_ranges(tk.SEL)
                 if not selection: return
                 start, end = selection
                 color_tag = f"color_{color_code}"
-                if color_tag not in self.text.tag_names():
-                    self.text.tag_configure(color_tag, foreground=color_code)
-                for tag in self.text.tag_names(start):
+                if color_tag not in active_text.tag_names():
+                    active_text.tag_configure(color_tag, foreground=color_code)
+                for tag in active_text.tag_names(start):
                     if tag.startswith('color_'):
-                        self.text.tag_remove(tag, start, end)
-                self.text.tag_add(color_tag, start, end)
-                self.auto_save(None)
+                        active_text.tag_remove(tag, start, end)
+                active_text.tag_add(color_tag, start, end)
+                self.auto_save_active()
             except tk.TclError: pass
 
     def change_font_size(self, delta):
         try:
-            selection = self.text.tag_ranges(tk.SEL)
-            start, end = selection if selection else (self.text.index(tk.INSERT + " -1c"), self.text.index(tk.INSERT))
+            active_text = self.get_active_text_widget()
+            selection = active_text.tag_ranges(tk.SEL)
+            start, end = selection if selection else (active_text.index(tk.INSERT + " -1c"), active_text.index(tk.INSERT))
             if start == end and not selection: return
 
-            current_tags = self.text.tag_names(start)
+            current_tags = active_text.tag_names(start)
             current_size = self.default_font[1]
             for tag in current_tags:
                 if tag.startswith('size_'):
                     current_size = int(tag.split('_')[1])
-                    self.text.tag_remove(tag, start, end)
+                    active_text.tag_remove(tag, start, end)
                     break
             
             new_size = max(8, min(48, current_size + delta))
             new_size_tag = f"size_{new_size}"
 
-            if new_size_tag not in self.text.tag_names():
-                self.text.tag_configure(new_size_tag, font=(self.default_font[0], new_size))
+            if new_size_tag not in active_text.tag_names():
+                active_text.tag_configure(new_size_tag, font=(self.default_font[0], new_size))
             
-            self.text.tag_add(new_size_tag, start, end)
-            self.auto_save(None)
+            active_text.tag_add(new_size_tag, start, end)
+            self.auto_save_active()
 
         except tk.TclError: pass
     # [ID: FORMATTING_END_008]
@@ -690,7 +1418,11 @@ class DailyNotesApp:
                 self.text.delete(tk.SEL_FIRST, tk.SEL_LAST)
                 
             clipboard_data = self.root.clipboard_get()
-            self.text.insert(tk.INSERT, clipboard_data)
+            table_data = self.parse_clipboard_table(clipboard_data)
+            if table_data:
+                self.insert_table_from_data(table_data, insert_index=tk.INSERT)
+            else:
+                self.text.insert(tk.INSERT, clipboard_data)
             self.auto_save(None)
         
         except tk.TclError:
@@ -744,21 +1476,42 @@ class DailyNotesApp:
         
         self.auto_save(None)
 
+    def parse_clipboard_table(self, clipboard_data):
+        """Parses tabular clipboard text (e.g. Excel) into table data."""
+        if not clipboard_data or "\t" not in clipboard_data:
+            return None
+
+        rows = [row for row in clipboard_data.rstrip("\n").split("\n") if row != ""]
+        if not rows:
+            return None
+
+        parsed_rows = [row.split("\t") for row in rows]
+        col_count = max(len(row) for row in parsed_rows)
+        if col_count == 0:
+            return None
+
+        cell_data = {}
+        for r, row in enumerate(parsed_rows):
+            for c in range(col_count):
+                cell_data[f"{r},{c}"] = row[c] if c < len(row) else ""
+
+        return {
+            "rows": len(parsed_rows),
+            "cols": col_count,
+            "cell_data": cell_data
+        }
+
+    def insert_table_from_data(self, table_data, insert_index=tk.END):
+        """Embeds a table in the text widget using provided table data."""
+        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+        table_frame = TableFrame(self.text, self, initial_data=table_data)
+        self.table_references[table_key] = table_frame
+        self.text.window_create(insert_index, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
+        self.text.insert(insert_index, "\n")
+
     def load_table_from_data(self, table_data):
         """Loads a table from saved data and embeds it into the text widget."""
-        
-        # Generate a unique key for the reference dictionary
-        table_key = f"table_ref_{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-
-        # 1. Create the TableFrame object, passing the saved data
-        table_frame = TableFrame(self.text, self, initial_data=table_data)
-
-        # 2. Store the reference
-        self.table_references[table_key] = table_frame
-        
-        # 3. Embed the frame
-        self.text.window_create(tk.END, window=table_frame, stretch=True, padx=5, pady=5, align=tk.CENTER)
-        self.text.insert(tk.END, "\n") # Add newline after table
+        self.insert_table_from_data(table_data, insert_index=tk.END)
     # [ID: TABLE_HANDLING_END_NEW]
 
     # [ID: IMAGE_HANDLING_START_011]
@@ -798,11 +1551,22 @@ class DailyNotesApp:
             photo = ImageTk.PhotoImage(img)
             image_tag = os.path.basename(image_path)
             
-            # Store the reference for garbage collection
-            self.image_references[image_tag] = photo
-            
             # Create a Label for the image
             image_label = tk.Label(self.text, image=photo)
+            image_label.image_tag = image_tag
+            image_label.bind("<MouseWheel>", self.handle_image_resize)
+            image_label.bind("<Shift-B1-Motion>", self.handle_image_drag_resize)
+            image_label.bind("<ButtonPress-1>", self.start_image_drag)
+            image_label.bind("<B1-Motion>", self.track_image_drag)
+            image_label.bind("<ButtonRelease-1>", self.end_image_drag)
+
+            # Store the reference for garbage collection
+            self.image_references[image_tag] = {
+                "photo": photo,
+                "label": image_label,
+                "size": (img.width, img.height),
+                "path": image_path
+            }
             
             # Embed the label. The 'name' option is removed (FIX for TclError).
             self.text.window_create(tk.INSERT, window=image_label)
@@ -811,10 +1575,10 @@ class DailyNotesApp:
         except Exception as e:
             messagebox.showerror("Error", f"Could not load/insert image: {e}")
 
-    def load_image_from_file(self, image_tag):
+    def load_image_from_file(self, image_tag, size=None):
         image_path = os.path.join(self.get_attachments_folder(self.current_date), image_tag)
         if os.path.exists(image_path):
-            self.insert_image_into_text(image_path)
+            self.insert_image_into_text(image_path) if not size else self.insert_image_with_size(image_path, size)
         else:
             self.text.insert(tk.END, f"[IMAGE MISSING: {image_tag}]\n")
 
