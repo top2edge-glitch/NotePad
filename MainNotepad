@@ -1104,6 +1104,9 @@ class DailyNotesApp:
         row_id = self.tasks_tree.identify_row(event.y)
         if not row_id:
             return
+        if column == "#4":
+            self.edit_task_due_date(row_id)
+            return "break"
         if column == "#1":
             for task in self.tasks:
                 if task["id"] == row_id:
@@ -1111,9 +1114,6 @@ class DailyNotesApp:
                     break
             self.save_tasks()
             self.render_tasks()
-            return "break"
-        if column == "#4":
-            self.edit_task_due_date(row_id)
             return "break"
         if column == "#5":
             for task in self.tasks:
