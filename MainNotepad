@@ -351,84 +351,78 @@ class DailyNotesApp:
         self.general_text.bind("<Control-u>", self.toggle_underline)
 
         # Tasks UI
-        tasks_header = tk.Label(
-            tasks_tab,
-            text="Tasks",
-            anchor="w",
-            font=("Segoe UI", 12, "bold"),
-            bg=self.ui_colors["bg"],
-            fg=self.ui_colors["text"]
-        )
-        tasks_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+        tasks_nav = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
+        tasks_nav.pack(fill=tk.X, padx=14, pady=(10, 6))
 
-        task_form = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
-        task_form.pack(fill=tk.X, padx=10, pady=(0, 10))
+        tk.Label(tasks_nav, text="Tasks", font=("Segoe UI", 18, "bold"), bg=self.ui_colors["bg"], fg="#2564cf").pack(side=tk.LEFT)
+        tk.Label(tasks_nav, text="⋯", font=("Segoe UI", 16), bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).pack(side=tk.LEFT, padx=(8, 0))
 
-        tk.Label(task_form, text="Task", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=0, sticky="w")
-        self.task_title_entry = tk.Entry(task_form, width=40)
-        self.task_title_entry.grid(row=1, column=0, sticky="w", padx=(0, 10))
+        nav_right = tk.Frame(tasks_nav, bg=self.ui_colors["bg"])
+        nav_right.pack(side=tk.RIGHT)
+        self.create_toolbar_button(nav_right, "Sort", self.toggle_task_sort_mode).pack(side=tk.LEFT, padx=3)
+        self.create_toolbar_button(nav_right, "Group", self.toggle_task_group_mode).pack(side=tk.LEFT, padx=3)
+        self.create_toolbar_button(nav_right, "List", lambda: self.set_task_layout_mode("list")).pack(side=tk.LEFT, padx=3)
+        self.create_toolbar_button(nav_right, "Grid", lambda: self.set_task_layout_mode("grid")).pack(side=tk.LEFT, padx=3)
 
-        tk.Label(task_form, text="Due Date (YYYY-MM-DD)", bg=self.ui_colors["bg"], fg=self.ui_colors["muted"]).grid(row=0, column=1, sticky="w")
-        self.task_due_entry = tk.Entry(task_form, width=16)
-        self.task_due_entry.grid(row=1, column=1, sticky="w", padx=(0, 10))
-        self.task_due_entry.configure(state="readonly")
-        self.task_due_entry.bind("<Button-1>", self.open_task_date_picker)
-        self.create_toolbar_button(task_form, "Add Task", self.add_task).grid(row=1, column=2, sticky="w", padx=(10, 0))
+        add_card = tk.Frame(tasks_tab, bg=self.ui_colors["panel"], highlightthickness=1, highlightbackground=self.ui_colors["border"])
+        add_card.pack(fill=tk.X, padx=14, pady=(0, 10))
 
-        task_tabs = ttk.Notebook(tasks_tab)
-        task_tabs.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.task_tabs = task_tabs
+        add_top = tk.Frame(add_card, bg=self.ui_colors["panel"])
+        add_top.pack(fill=tk.X, padx=10, pady=(10, 8))
+        tk.Label(add_top, text="○", font=("Segoe UI", 20), bg=self.ui_colors["panel"], fg="#2564cf").pack(side=tk.LEFT, padx=(0, 8))
 
-        tasks_list_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
-        archives_tab = tk.Frame(task_tabs, bg=self.ui_colors["bg"])
-        task_tabs.add(tasks_list_tab, text="Active Tasks")
-        task_tabs.add(archives_tab, text="Archives")
+        self.task_input_var = tk.StringVar()
+        self.task_input_entry = tk.Entry(add_top, textvariable=self.task_input_var, relief=tk.FLAT, font=("Segoe UI", 12), bg=self.ui_colors["panel"], fg=self.ui_colors["text"])
+        self.task_input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.task_input_entry.insert(0, "Add a task")
+        self.task_input_entry.config(fg=self.ui_colors["muted"])
+        self.task_input_entry.bind("<FocusIn>", self.handle_task_input_focus_in)
+        self.task_input_entry.bind("<FocusOut>", self.handle_task_input_focus_out)
+        self.task_input_entry.bind("<KeyRelease>", self.update_add_task_button_state)
 
-        task_list_frame = tk.Frame(tasks_list_tab, bg=self.ui_colors["bg"])
-        task_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.tasks_tree = ttk.Treeview(task_list_frame, columns=("select", "index", "task", "due", "star"), show="headings")
-        self.tasks_tree.heading("select", text="")
-        self.tasks_tree.heading("index", text="#")
-        self.tasks_tree.heading("task", text="Task")
-        self.tasks_tree.heading("due", text="Due Date")
-        self.tasks_tree.heading("star", text="Star")
-        self.tasks_tree.column("select", width=30, anchor="center")
-        self.tasks_tree.column("index", width=40, anchor="center")
-        self.tasks_tree.column("task", width=290, anchor="w")
-        self.tasks_tree.column("due", width=120, anchor="center")
-        self.tasks_tree.column("star", width=60, anchor="center")
-        self.tasks_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.tasks_tree.tag_configure("overdue", foreground="red")
-        self.tasks_tree.bind("<Button-1>", self.handle_task_click)
+        add_bottom = tk.Frame(add_card, bg=self.ui_colors["panel"])
+        add_bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        tasks_scroll = tk.Scrollbar(task_list_frame, command=self.tasks_tree.yview)
+        self.create_toolbar_button(add_bottom, "📅 Set Date", self.open_task_date_picker).pack(side=tk.LEFT, padx=(0, 6))
+        self.create_toolbar_button(add_bottom, "🔔 Reminders", self.show_reminder_info).pack(side=tk.LEFT, padx=6)
+        self.create_toolbar_button(add_bottom, "🔁 Repeat", self.show_repeat_info).pack(side=tk.LEFT, padx=6)
+
+        self.task_due_var = tk.StringVar(value="")
+        self.task_due_label = tk.Label(add_bottom, textvariable=self.task_due_var, bg=self.ui_colors["panel"], fg=self.ui_colors["muted"], font=("Segoe UI", 10))
+        self.task_due_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.add_task_button = self.create_toolbar_button(add_bottom, "Add", self.add_task)
+        self.add_task_button.pack(side=tk.RIGHT)
+        self.add_task_button.config(state=tk.DISABLED)
+
+        tasks_body = tk.Frame(tasks_tab, bg="#F3F3F3")
+        tasks_body.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 10))
+
+        self.tasks_canvas = tk.Canvas(tasks_body, bg="#F3F3F3", highlightthickness=0)
+        self.tasks_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tasks_scroll = tk.Scrollbar(tasks_body, command=self.tasks_canvas.yview)
         tasks_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tasks_tree.configure(yscrollcommand=tasks_scroll.set)
+        self.tasks_canvas.configure(yscrollcommand=tasks_scroll.set)
 
-        task_actions = tk.Frame(tasks_tab, bg=self.ui_colors["bg"])
-        task_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
-        self.create_toolbar_button(task_actions, "Mark Completed", self.complete_task).pack(side=tk.LEFT, padx=2)
-        self.create_toolbar_button(task_actions, "Delete Selected", self.delete_selected_tasks).pack(side=tk.LEFT, padx=2)
+        self.tasks_container = tk.Frame(self.tasks_canvas, bg="#F3F3F3")
+        self.tasks_canvas_window = self.tasks_canvas.create_window((0, 0), window=self.tasks_container, anchor='nw')
+        self.tasks_container.bind("<Configure>", lambda e: self.tasks_canvas.configure(scrollregion=self.tasks_canvas.bbox("all")))
+        self.tasks_canvas.bind("<Configure>", lambda e: self.tasks_canvas.itemconfigure(self.tasks_canvas_window, width=e.width))
 
-        archive_list_frame = tk.Frame(archives_tab, bg=self.ui_colors["bg"])
-        archive_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.archives_tree = ttk.Treeview(archive_list_frame, columns=("index", "task", "due", "star", "done"), show="headings")
-        self.archives_tree.heading("index", text="#")
-        self.archives_tree.heading("task", text="Task")
-        self.archives_tree.heading("due", text="Due Date")
-        self.archives_tree.heading("star", text="Star")
-        self.archives_tree.heading("done", text="Completed")
-        self.archives_tree.column("index", width=40, anchor="center")
-        self.archives_tree.column("task", width=280, anchor="w")
-        self.archives_tree.column("due", width=120, anchor="center")
-        self.archives_tree.column("star", width=60, anchor="center")
-        self.archives_tree.column("done", width=120, anchor="center")
-        self.archives_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.active_tasks_frame = tk.Frame(self.tasks_container, bg="#F3F3F3")
+        self.active_tasks_frame.pack(fill=tk.X, pady=(0, 10))
 
-        archives_scroll = tk.Scrollbar(archive_list_frame, command=self.archives_tree.yview)
-        archives_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.archives_tree.configure(yscrollcommand=archives_scroll.set)
+        completed_header = tk.Frame(self.tasks_container, bg="#F3F3F3")
+        completed_header.pack(fill=tk.X, pady=(8, 4))
+        self.completed_toggle_btn = tk.Button(completed_header, text="▾ Completed (0)", command=self.toggle_completed_section, relief=tk.FLAT, bg="#F3F3F3", fg=self.ui_colors["text"], font=("Segoe UI", 12, "bold"), anchor='w')
+        self.completed_toggle_btn.pack(side=tk.LEFT, fill=tk.X)
 
+        self.completed_tasks_frame = tk.Frame(self.tasks_container, bg="#F3F3F3")
+        self.completed_tasks_frame.pack(fill=tk.X)
+
+        self.completed_section_expanded = True
+        self.task_layout_mode = "list"
+        self.task_sort_mode = "due"
         # --- KEYBOARD SHORTCUTS ---
         self.text.bind("<Control-z>", self.perform_undo)
         self.text.bind("<Control-y>", self.perform_redo)
@@ -867,6 +861,8 @@ class DailyNotesApp:
         current_tab = self.notebook.select()
         if current_tab == str(self.notebook.tabs()[1]):
             return self.general_text
+        if current_tab == str(self.notebook.tabs()[2]):
+            return None
         return self.text
 
     def update_header(self):
@@ -881,13 +877,18 @@ class DailyNotesApp:
 
     def update_status_metrics(self, event=None):
         active_text = self.get_active_text_widget()
+        if active_text is None:
+            active_count = len([t for t in self.tasks if not t.get("is_completed")])
+            completed_count = len([t for t in self.tasks if t.get("is_completed")])
+            self.stats_var.set(f"Active: {active_count} | Completed: {completed_count}")
+            return
         content = active_text.get("1.0", "end-1c")
         words = len([word for word in content.split() if word.strip()])
         chars = len(content)
         line, col = active_text.index(tk.INSERT).split(".")
         self.stats_var.set(f"Words: {words} | Chars: {chars} | Ln {line}, Col {col}")
 
-    def open_task_date_picker(self, event=None):
+    def open_task_date_picker(self, event=None, callback=None):
         picker = tk.Toplevel(self.root)
         picker.title("Select Due Date")
         picker.transient(self.root)
@@ -897,94 +898,108 @@ class DailyNotesApp:
         cal.pack(padx=10, pady=10)
 
         def set_date():
-            self.task_due_entry.configure(state="normal")
-            self.task_due_entry.delete(0, tk.END)
-            self.task_due_entry.insert(0, cal.get_date())
-            self.task_due_entry.configure(state="readonly")
+            selected = cal.get_date()
+            if callback:
+                callback(selected)
+            else:
+                self.task_due_var.set(selected)
             picker.destroy()
 
         self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
         return "break"
 
+    def handle_task_input_focus_in(self, event):
+        if self.task_input_entry.get().strip() == "Add a task" and self.task_input_entry.cget("fg") == self.ui_colors["muted"]:
+            self.task_input_entry.delete(0, tk.END)
+            self.task_input_entry.config(fg=self.ui_colors["text"])
+
+    def handle_task_input_focus_out(self, event):
+        if not self.task_input_entry.get().strip():
+            self.task_input_entry.delete(0, tk.END)
+            self.task_input_entry.insert(0, "Add a task")
+            self.task_input_entry.config(fg=self.ui_colors["muted"])
+        self.update_add_task_button_state()
+
+    def update_add_task_button_state(self, event=None):
+        value = self.task_input_var.get().strip()
+        if not value or (value == "Add a task" and self.task_input_entry.cget("fg") == self.ui_colors["muted"]):
+            self.add_task_button.config(state=tk.DISABLED)
+        else:
+            self.add_task_button.config(state=tk.NORMAL)
+
+    def show_reminder_info(self):
+        messagebox.showinfo("Reminders", "Reminder controls can be added in a future update.")
+
+    def show_repeat_info(self):
+        messagebox.showinfo("Repeat", "Repeat controls can be added in a future update.")
+
+    def toggle_task_sort_mode(self):
+        self.task_sort_mode = "important" if self.task_sort_mode == "due" else "due"
+        self.render_tasks()
+
+    def toggle_task_group_mode(self):
+        self.completed_section_expanded = not self.completed_section_expanded
+        self.toggle_completed_section(force=True)
+
+    def set_task_layout_mode(self, mode):
+        self.task_layout_mode = mode
+        self.render_tasks()
+
     def add_task(self):
-        title = self.task_title_entry.get().strip()
-        due_str = self.task_due_entry.get().strip()
-        if not title or not due_str:
-            messagebox.showwarning("Missing Info", "Please provide a task title and due date.")
+        title = self.task_input_var.get().strip()
+        if not title or (title == "Add a task" and self.task_input_entry.cget("fg") == self.ui_colors["muted"]):
             return
 
-        try:
-            due_date = datetime.datetime.strptime(due_str, "%Y-%m-%d").date()
-        except ValueError:
-            messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
-            return
-
-        if due_date < datetime.date.today():
-            messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
-            return
+        due_str = self.task_due_var.get().strip()
+        if due_str:
+            try:
+                due_date = datetime.datetime.strptime(due_str, "%Y-%m-%d").date()
+                if due_date < datetime.date.today():
+                    messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+                    return
+            except ValueError:
+                messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
+                return
 
         task = {
             "id": datetime.datetime.now().strftime("%Y%m%d%H%M%S%f"),
             "title": title,
             "due_date": due_str,
-            "star": False,
-            "selected": False,
+            "is_completed": False,
+            "is_important": False,
             "created_at": datetime.datetime.now().isoformat()
         }
         self.tasks.append(task)
-        self.task_title_entry.delete(0, tk.END)
-        self.task_due_entry.delete(0, tk.END)
-        self.save_tasks()
-        self.render_tasks()
 
-    def delete_task(self):
-        selected = self.tasks_tree.selection()
-        if not selected:
-            return
-        task_id = selected[0]
-        self.tasks = [task for task in self.tasks if task["id"] != task_id]
+        self.task_input_var.set("")
+        self.task_due_var.set("")
+        self.task_input_entry.delete(0, tk.END)
+        self.task_input_entry.insert(0, "Add a task")
+        self.task_input_entry.config(fg=self.ui_colors["muted"])
+        self.update_add_task_button_state()
+
         self.save_tasks()
         self.render_tasks()
 
     def delete_selected_tasks(self):
-        remaining = []
-        for task in self.tasks:
-            if task.get("selected"):
-                continue
-            remaining.append(task)
-        if len(remaining) == len(self.tasks):
+        removed = [task for task in self.tasks if task.get("selected")]
+        if not removed:
             return
-        self.tasks = remaining
-        self.save_tasks()
-        self.render_tasks()
-
-    def toggle_task_star(self):
-        selected = self.tasks_tree.selection()
-        if not selected:
-            return
-        task_id = selected[0]
-        for task in self.tasks:
-            if task["id"] == task_id:
-                task["star"] = not task.get("star", False)
-                break
+        self.tasks = [task for task in self.tasks if not task.get("selected")]
         self.save_tasks()
         self.render_tasks()
 
     def complete_task(self):
-        selected = self.tasks_tree.selection()
-        if not selected:
+        selected_ids = [task["id"] for task in self.tasks if task.get("selected") and not task.get("is_completed")]
+        if not selected_ids:
             return
-        task_id = selected[0]
-        task = next((task for task in self.tasks if task["id"] == task_id), None)
-        if not task:
-            return
-        task["completed_at"] = datetime.datetime.now().isoformat()
-        self.tasks = [item for item in self.tasks if item["id"] != task_id]
-        self.archived_tasks.append(task)
+        for task in self.tasks:
+            if task["id"] in selected_ids:
+                task["is_completed"] = True
+                task["selected"] = False
+                task["completed_at"] = datetime.datetime.now().isoformat()
         self.save_tasks()
-        self.save_archives()
         self.render_tasks()
-        self.render_archives()
 
     def save_tasks(self):
         tasks_file = self.get_tasks_file()
@@ -996,133 +1011,150 @@ class DailyNotesApp:
 
     def load_tasks(self):
         tasks_file = self.get_tasks_file()
+        self.tasks = []
         if os.path.exists(tasks_file):
             try:
                 with open(tasks_file, 'r') as f:
-                    self.tasks = json.load(f)
+                    raw_tasks = json.load(f)
+                for task in raw_tasks:
+                    normalized = {
+                        "id": task.get("id", datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")),
+                        "title": task.get("title", ""),
+                        "due_date": task.get("due_date", ""),
+                        "is_completed": bool(task.get("is_completed", task.get("completed_at") is not None)),
+                        "is_important": bool(task.get("is_important", task.get("star", False))),
+                        "selected": False,
+                        "created_at": task.get("created_at", datetime.datetime.now().isoformat()),
+                        "completed_at": task.get("completed_at")
+                    }
+                    self.tasks.append(normalized)
             except Exception:
                 self.tasks = []
         self.render_tasks()
-        self.load_archives()
 
-    def save_archives(self):
-        archives_file = self.get_archives_file()
+    def toggle_task_importance(self, task_id):
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["is_important"] = not task.get("is_important", False)
+                break
+        self.save_tasks()
+        self.render_tasks()
+
+    def toggle_task_selection(self, task_id):
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["selected"] = not task.get("selected", False)
+                break
+        self.save_tasks()
+        self.render_tasks()
+
+    def toggle_task_completion(self, task_id):
+        for task in self.tasks:
+            if task["id"] == task_id:
+                task["is_completed"] = not task.get("is_completed", False)
+                task["selected"] = False
+                if task["is_completed"]:
+                    task["completed_at"] = datetime.datetime.now().isoformat()
+                else:
+                    task["completed_at"] = None
+                break
+        self.save_tasks()
+        self.render_tasks()
+
+    def format_due_text(self, task):
+        due = task.get("due_date", "")
+        if not due:
+            return ""
         try:
-            with open(archives_file, 'w') as f:
-                json.dump(self.archived_tasks, f, indent=4)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save archives: {e}")
-
-    def load_archives(self):
-        archives_file = self.get_archives_file()
-        if os.path.exists(archives_file):
-            try:
-                with open(archives_file, 'r') as f:
-                    self.archived_tasks = json.load(f)
-            except Exception:
-                self.archived_tasks = []
-        self.render_archives()
+            due_date = datetime.datetime.strptime(due, "%Y-%m-%d").date()
+            if due_date < datetime.date.today() and not task.get("is_completed"):
+                return f"📅 Overdue, {due_date.strftime('%A, %B %d')}"
+            return f"📅 Due, {due_date.strftime('%A, %B %d')}"
+        except ValueError:
+            return f"📅 {due}"
 
     def render_tasks(self):
-        for item in self.tasks_tree.get_children():
-            self.tasks_tree.delete(item)
+        for widget in self.active_tasks_frame.winfo_children():
+            widget.destroy()
+        for widget in self.completed_tasks_frame.winfo_children():
+            widget.destroy()
 
-        def sort_key(task):
-            return (not task.get("star", False), task.get("due_date", ""), task.get("created_at", ""))
+        active_tasks = [task for task in self.tasks if not task.get("is_completed")]
+        completed_tasks = [task for task in self.tasks if task.get("is_completed")]
 
-        today = datetime.date.today()
-        for index, task in enumerate(sorted(self.tasks, key=sort_key), start=1):
-            due_date = task.get("due_date", "")
-            star_display = "★" if task.get("star") else ""
-            selected_display = "☑" if task.get("selected") else "☐"
-            tags = []
-            try:
-                parsed_due = datetime.datetime.strptime(due_date, "%Y-%m-%d").date()
-                if parsed_due < today:
-                    tags.append("overdue")
-            except ValueError:
-                pass
-            self.tasks_tree.insert(
-                "",
-                tk.END,
-                iid=task["id"],
-                values=(selected_display, index, task.get("title", ""), due_date, star_display),
-                tags=tags
-            )
+        if self.task_sort_mode == "important":
+            active_tasks.sort(key=lambda t: (not t.get("is_important", False), t.get("due_date", "9999-12-31"), t.get("created_at", "")))
+        else:
+            active_tasks.sort(key=lambda t: (t.get("due_date", "9999-12-31"), not t.get("is_important", False), t.get("created_at", "")))
 
-    def render_archives(self):
-        for item in self.archives_tree.get_children():
-            self.archives_tree.delete(item)
+        for task in active_tasks:
+            self.create_task_card(self.active_tasks_frame, task)
 
-        for index, task in enumerate(self.archived_tasks, start=1):
-            due_date = task.get("due_date", "")
-            star_display = "★" if task.get("star") else ""
-            completed_at = task.get("completed_at", "")
-            completed_display = completed_at.split("T")[0] if completed_at else ""
-            self.archives_tree.insert(
-                "",
-                tk.END,
-                iid=task["id"],
-                values=(index, task.get("title", ""), due_date, star_display, completed_display)
-            )
+        for task in completed_tasks:
+            self.create_task_card(self.completed_tasks_frame, task, completed=True)
+
+        self.completed_toggle_btn.configure(text=f"{'▾' if self.completed_section_expanded else '▸'} Completed {len(completed_tasks)}")
+        if self.completed_section_expanded:
+            self.completed_tasks_frame.pack(fill=tk.X)
+        else:
+            self.completed_tasks_frame.pack_forget()
+
+    def create_task_card(self, parent, task, completed=False):
+        card = tk.Frame(parent, bg="#FFFFFF", highlightthickness=1, highlightbackground="#e5e5e5")
+        card.pack(fill=tk.X, pady=5)
+
+        row = tk.Frame(card, bg="#FFFFFF")
+        row.pack(fill=tk.X, padx=10, pady=8)
+
+        checkbox_text = "◉" if completed else "○"
+        checkbox = tk.Button(row, text=checkbox_text, relief=tk.FLAT, bg="#FFFFFF", fg="#2564cf", font=("Segoe UI", 14), command=lambda tid=task["id"]: self.toggle_task_completion(tid))
+        checkbox.pack(side=tk.LEFT)
+
+        title_style = ("Segoe UI", 12, "bold") if not completed else ("Segoe UI", 12, "overstrike")
+        title_color = self.ui_colors["text"] if not completed else self.ui_colors["muted"]
+
+        title_label = tk.Label(row, text=task.get("title", ""), bg="#FFFFFF", fg=title_color, font=title_style, anchor='w', justify=tk.LEFT)
+        title_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+
+        star_char = "★" if task.get("is_important") else "☆"
+        star_btn = tk.Button(row, text=star_char, relief=tk.FLAT, bg="#FFFFFF", fg="#2564cf", font=("Segoe UI", 14), command=lambda tid=task["id"]: self.toggle_task_importance(tid))
+        star_btn.pack(side=tk.RIGHT)
+
+        select_char = "☑" if task.get("selected") else "☐"
+        select_btn = tk.Button(row, text=select_char, relief=tk.FLAT, bg="#FFFFFF", fg=self.ui_colors["muted"], font=("Segoe UI", 12), command=lambda tid=task["id"]: self.toggle_task_selection(tid))
+        select_btn.pack(side=tk.RIGHT, padx=(0, 6))
+
+        if task.get("due_date"):
+            due_text = self.format_due_text(task)
+            is_overdue = due_text.startswith("📅 Overdue") and not completed
+            due_label = tk.Label(card, text=due_text, bg="#FFFFFF", fg="#d13438" if is_overdue else self.ui_colors["muted"], font=("Segoe UI", 10, "bold" if is_overdue else "normal"), anchor='w')
+            due_label.pack(fill=tk.X, padx=48, pady=(0, 8))
+            due_label.bind("<Button-1>", lambda e, tid=task["id"]: self.edit_task_due_date(tid))
+
+    def toggle_completed_section(self, force=False):
+        if not force:
+            self.completed_section_expanded = not self.completed_section_expanded
+        self.render_tasks()
 
     def edit_task_due_date(self, task_id):
         task = next((task for task in self.tasks if task["id"] == task_id), None)
         if not task:
             return
 
-        picker = tk.Toplevel(self.root)
-        picker.title("Select Due Date")
-        picker.transient(self.root)
-        picker.grab_set()
-
-        cal = Calendar(picker, selectmode='day', date_pattern='yyyy-mm-dd')
-        cal.pack(padx=10, pady=10)
-
-        def set_date():
-            selected_date = cal.get_date()
+        def apply_date(selected_date):
             try:
                 due_date = datetime.datetime.strptime(selected_date, "%Y-%m-%d").date()
             except ValueError:
                 messagebox.showerror("Invalid Date", "Use YYYY-MM-DD format for the due date.")
                 return
-            if due_date < datetime.date.today():
-                messagebox.showwarning("Invalid Date", "Due date cannot be in the past.")
+            if due_date < datetime.date.today() and not task.get("is_completed"):
+                messagebox.showwarning("Invalid Date", "Due date cannot be in the past for active tasks.")
                 return
             task["due_date"] = selected_date
             self.save_tasks()
             self.render_tasks()
-            picker.destroy()
 
-        self.create_toolbar_button(picker, "Select", set_date).pack(pady=(0, 10))
-
-    def handle_task_click(self, event):
-        region = self.tasks_tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-        column = self.tasks_tree.identify_column(event.x)
-        row_id = self.tasks_tree.identify_row(event.y)
-        if not row_id:
-            return
-        if column == "#4":
-            self.edit_task_due_date(row_id)
-            return "break"
-        if column == "#1":
-            for task in self.tasks:
-                if task["id"] == row_id:
-                    task["selected"] = not task.get("selected", False)
-                    break
-            self.save_tasks()
-            self.render_tasks()
-            return "break"
-        if column == "#5":
-            for task in self.tasks:
-                if task["id"] == row_id:
-                    task["star"] = not task.get("star", False)
-                    break
-            self.save_tasks()
-            self.render_tasks()
-            return "break"
+        self.open_task_date_picker(callback=apply_date)
 
     def insert_image_with_size(self, image_path, size):
         try:
