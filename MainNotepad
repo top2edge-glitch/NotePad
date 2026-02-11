@@ -189,6 +189,7 @@ class DailyNotesApp:
         self.notebook.add(main_tab, text="Daily Notes")
         self.notebook.add(general_tab, text="General Notes")
         self.notebook.add(tasks_tab, text="Tasks")
+        self.update_pending_count_badges()
 
         # Left frame: Calendar + Page Selector
         left_frame = tk.Frame(main_tab, padx=10, pady=10, bg=self.ui_colors["bg"])
@@ -934,7 +935,8 @@ class DailyNotesApp:
         messagebox.showinfo("Repeat", "Repeat controls can be added in a future update.")
 
     def toggle_task_sort_mode(self):
-        self.task_sort_mode = "important" if self.task_sort_mode == "due" else "due"
+        self.task_sort_mode = "due"
+        messagebox.showinfo("Sort", "Tasks are sorted by nearest due date first.")
         self.render_tasks()
 
     def toggle_task_group_mode(self):
@@ -984,6 +986,10 @@ class DailyNotesApp:
     def delete_selected_tasks(self):
         removed = [task for task in self.tasks if task.get("selected")]
         if not removed:
+            return
+        if not messagebox.askyesno("Delete Tasks", f"Delete {len(removed)} selected task(s)?"):
+            return
+        if not messagebox.askyesno("Confirm Delete", "This cannot be undone. Are you sure?"):
             return
         self.tasks = [task for task in self.tasks if not task.get("selected")]
         self.save_tasks()
@@ -1082,10 +1088,7 @@ class DailyNotesApp:
         active_tasks = [task for task in self.tasks if not task.get("is_completed")]
         completed_tasks = [task for task in self.tasks if task.get("is_completed")]
 
-        if self.task_sort_mode == "important":
-            active_tasks.sort(key=lambda t: (not t.get("is_important", False), t.get("due_date", "9999-12-31"), t.get("created_at", "")))
-        else:
-            active_tasks.sort(key=lambda t: (t.get("due_date", "9999-12-31"), not t.get("is_important", False), t.get("created_at", "")))
+        active_tasks.sort(key=lambda t: (t.get("due_date", "9999-12-31"), not t.get("is_important", False), t.get("created_at", "")))
 
         for task in active_tasks:
             self.create_task_card(self.active_tasks_frame, task)
@@ -1098,6 +1101,15 @@ class DailyNotesApp:
             self.completed_tasks_frame.pack(fill=tk.X)
         else:
             self.completed_tasks_frame.pack_forget()
+
+        self.update_pending_count_badges()
+
+    def update_pending_count_badges(self):
+        pending_count = len([task for task in self.tasks if not task.get("is_completed")])
+        badge = f" ({pending_count})" if pending_count > 0 else ""
+        self.notebook.tab(0, text=f"Daily Notes{badge}")
+        self.notebook.tab(1, text=f"General Notes{badge}")
+        self.notebook.tab(2, text="Tasks")
 
     def create_task_card(self, parent, task, completed=False):
         card = tk.Frame(parent, bg="#FFFFFF", highlightthickness=1, highlightbackground="#e5e5e5")
